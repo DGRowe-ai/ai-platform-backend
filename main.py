@@ -18,8 +18,7 @@ from auth_utils import hash_password, verify_password, create_access_token, get_
 # Business creation engine (Step 12)
 from business_utils import create_business_for_user
 
-# Load environment variables
-load_dotenv()
+# 🔥 Hardcode API key for now
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # FastAPI app
@@ -52,10 +51,10 @@ def get_db():
         db.close()
 
 # -----------------------------
-# Load business data
+# Load business data (FIXED)
 # -----------------------------
 def load_business_data(business_id: str):
-    base = Path("..") / "businesses" / business_id
+    base = Path(__file__).parent / "businesses" / business_id
 
     profile = json.loads((base / "profile.json").read_text())
     settings = json.loads((base / "settings.json").read_text())
@@ -81,7 +80,7 @@ class ChatRequest(BaseModel):
 class SignupRequest(BaseModel):
     email: str
     password: str
-    business_name: str   # <-- Step 12 addition
+    business_name: str
 
 class LoginRequest(BaseModel):
     email: str
@@ -104,7 +103,9 @@ Chatbot tone: {business_data['settings']['tone']}
 User message:
 {user_message}
 
-Respond clearly, accurately, and only using the business information above.
+Respond clearly and accurately using the business information above.
+Always reply in the same language the user is using.
+If the user switches languages, follow their lead.
 """
 
     response = client.chat.completions.create(
@@ -189,7 +190,6 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    # NEW: create business automatically
     create_business_for_user(db, user, req.business_name)
 
     return {"message": "Signup successful"}
@@ -210,7 +210,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     }
 
 # -----------------------------
-# Step 11C - Protected Update Business
+# Step 11C - Protected Update Business (FIXED)
 # -----------------------------
 @app.post("/update_business")
 def update_business(payload: dict, user = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -221,7 +221,7 @@ def update_business(payload: dict, user = Depends(get_current_user), db: Session
     if not business or business.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    base = Path("..") / "businesses" / business_id
+    base = Path(__file__).parent / "businesses" / business_id
 
     (base / "profile.json").write_text(json.dumps(payload["profile"], indent=4))
     (base / "settings.json").write_text(json.dumps(payload["settings"], indent=4))
