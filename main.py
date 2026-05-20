@@ -127,6 +127,13 @@ If the user switches languages, follow their lead.
     return response.choices[0].message.content
 
 # -----------------------------
+# Subscription Guard
+# -----------------------------
+def require_subscription(user: User):
+    if user.subscription_active != 1:
+        raise HTTPException(status_code=402, detail="Subscription required")
+
+# -----------------------------
 # Routes
 # -----------------------------
 @app.get("/ping")
@@ -136,6 +143,7 @@ def ping():
 # Step 11A - Get logged-in user's businesses
 @app.get("/my_businesses")
 def my_businesses(user = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_subscription(user)
     businesses = db.query(Business).filter(Business.owner_id == user.id).all()
     return [
         {
@@ -149,6 +157,8 @@ def my_businesses(user = Depends(get_current_user), db: Session = Depends(get_db
 # Step 11B - Protected business loader
 @app.get("/business/{business_id}")
 def get_business(business_id: str, user = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_subscription(user)
+
     business = db.query(Business).filter(Business.folder_name == business_id).first()
 
     if not business or business.owner_id != user.id:
@@ -162,7 +172,9 @@ def get_business(business_id: str, user = Depends(get_current_user), db: Session
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/create-business")
-def create_business_route(req: CreateBusinessRequest, db: Session = Depends(get_db)):
+def create_business_route(req: CreateBusinessRequest, user = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_subscription(user)
+
     new_business = create_business_for_user(
         db=db,
         user=db.query(User).filter(User.id == req.owner_id).first(),
@@ -174,7 +186,8 @@ def create_business_route(req: CreateBusinessRequest, db: Session = Depends(get_
     }
 
 @app.post("/chat")
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, user = Depends(get_current_user)):
+    require_subscription(user)
     data = load_business_data(req.business_id)
     ai_response = generate_ai_response(data, req.message)
     return {"response": ai_response}
@@ -190,7 +203,8 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
 
     user = User(
         email=req.email,
-        password_hash=hash_password(req.password)
+        password_hash=hash_password(req.password),
+        subscription_active=0
     )
 
     db.add(user)
@@ -213,7 +227,8 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user_id": user.id
+        "user_id": user.id,
+        "subscription_active": user.subscription_active
     }
 
 # -----------------------------
@@ -221,6 +236,8 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 # -----------------------------
 @app.post("/update_business")
 def update_business(payload: dict, user = Depends(get_current_user), db: Session = Depends(get_db)):
+    require_subscription(user)
+
     business_id = payload["business_id"]
 
     business = db.query(Business).filter(Business.folder_name == business_id).first()
@@ -259,4 +276,56 @@ def create_checkout_session(user = Depends(get_current_user)):
             success_url="https://ai-platform-backend-ny15.onrender.com/success",
             cancel_url="https://ai-platform-backend-ny15.onrender.com/cancel",
         )
-        return {"url": session
+        return {"url": session.url}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/success")
+def checkout_success():
+    return {"message": "Payment successful. Subscription activated."}
+
+@app.get("/cancel")
+def checkout_cancel():
+    return {"message": "Payment canceled. No changes made."}
+
+# -----------------------------
+# Stripe Webhook
+# -----------------------------
+WEBHOOK_SECRET = "whsec_3QLASsmGV6iBHQqTeY6pQvPk013PNF58"
+
+@app.post("/webhook")
+async def stripe_webhook(request: Request, stripe_signature: str = Header(None), db: Session = Depends(get_db)):
+    payload = await request.body()
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload=payload,
+            sig_header=stripe_signature,
+            secret=WEBHOOK_SECRET
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Handle checkout completion
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        email = session.get("customer_email")
+
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            user.subscription_active = 1
+            db.commit()
+            print("Subscription activated for:", email)
+
+    # Handle subscription updates
+    if event["type"] in [
+        "customer.subscription.deleted",
+        "customer.subscription.canceled"
+    ]:
+        subscription = event["data"]["object"]
+        customer_id = subscription.get("customer")
+
+        # Stripe customer ID not stored yet — future step
+        print("Subscription canceled:", customer_id)
+
+    return {"status": "success"}
