@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Header
 from pydantic import BaseModel
 from pathlib import Path
 import json
@@ -259,13 +259,4 @@ def create_checkout_session(user = Depends(get_current_user)):
             success_url="https://ai-platform-backend-ny15.onrender.com/success",
             cancel_url="https://ai-platform-backend-ny15.onrender.com/cancel",
         )
-        return {"url": session.url}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-@app.get("/success")
-def checkout_success():
-    return {"message": "Payment successful. Subscription activated."}
-
-@app.get("/cancel")
-def checkout_cancel():
-    return {"message": "Payment canceled. No changes made."}
+        return {"url": session
