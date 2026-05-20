@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from pydantic import BaseModel
 from pathlib import Path
 import json
@@ -18,8 +18,17 @@ from auth_utils import hash_password, verify_password, create_access_token, get_
 # Business creation engine (Step 12)
 from business_utils import create_business_for_user
 
-# 🔥 Hardcode API key for now
+# -----------------------------
+# 🔥 Stripe Setup
+# -----------------------------
+import stripe
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
+# -----------------------------
+# OpenAI Setup
+# -----------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # FastAPI app
 app = FastAPI()
@@ -38,8 +47,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-
 # -----------------------------
 # Database session dependency
 # -----------------------------
@@ -51,7 +58,7 @@ def get_db():
         db.close()
 
 # -----------------------------
-# Load business data (FIXED)
+# Load business data
 # -----------------------------
 def load_business_data(business_id: str):
     base = Path(__file__).parent / "businesses" / business_id
@@ -210,7 +217,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     }
 
 # -----------------------------
-# Step 11C - Protected Update Business (FIXED)
+# Step 11C - Protected Update Business
 # -----------------------------
 @app.post("/update_business")
 def update_business(payload: dict, user = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -228,3 +235,37 @@ def update_business(payload: dict, user = Depends(get_current_user), db: Session
     (base / "knowledge.txt").write_text(payload["knowledge"])
 
     return {"message": "Business updated"}
+
+# -----------------------------
+# Stripe Subscription Checkout
+# -----------------------------
+@app.post("/create-checkout-session")
+def create_checkout_session(user = Depends(get_current_user)):
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "cad",
+                        "product": "prod_UXhofxvvPGlEfX",
+                        "unit_amount": 2500,
+                        "recurring": {"interval": "month"},
+                    },
+                    "quantity": 1,
+                }
+            ],
+            customer_email=user.email,
+            success_url="https://ai-platform-backend-ny15.onrender.com/success",
+            cancel_url="https://ai-platform-backend-ny15.onrender.com/cancel",
+        )
+        return {"url": session.url}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+@app.get("/success")
+def checkout_success():
+    return {"message": "Payment successful. Subscription activated."}
+
+@app.get("/cancel")
+def checkout_cancel():
+    return {"message": "Payment canceled. No changes made."}
