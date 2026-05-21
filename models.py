@@ -8,6 +8,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     password_hash = Column(String)
+    subscription_active = Column(Integer, default=0)  # ⭐ NEW FIELD
     businesses = relationship("Business", back_populates="owner")
 
 class Business(Base):
@@ -18,3 +19,12 @@ class Business(Base):
     folder_name = Column(String, unique=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="businesses")
+
+class MessageLog(Base):
+    __tablename__ = "message_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"))
+    timestamp = Column(String)
+    user_message = Column(String)
+    bot_response = Column(String)
