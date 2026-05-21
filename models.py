@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, ForeignKey
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text
 from sqlalchemy.orm import relationship
 from database import Base
+from datetime import datetime
 
 class User(Base):
     __tablename__ = "users"
@@ -36,3 +37,14 @@ class Business(Base):
         back_populates="businesses",
         foreign_keys=[owner_id]
     )
+
+class MessageLog(Base):
+    __tablename__ = "message_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"))
+    sender = Column(String)
+    message = Column(Text)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    business = relationship("Business")
