@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 from models import Business
 
-TEMPLATE_PATH = Path("..") / "businesses" / "template"
+TEMPLATE_PATH = Path(__file__).parent / "businesses" / "template"
 BUSINESSES_PATH = Path("..") / "businesses"
 
 def create_business_for_user(db, user, business_name):

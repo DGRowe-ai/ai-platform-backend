@@ -1,0 +1,2 @@
+This is the default knowledge base for My Biz.
+You can add FAQs or information here.

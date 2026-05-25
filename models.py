@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -22,6 +22,7 @@ class User(Base):
         foreign_keys="Business.owner_id"
     )
 
+
 class Business(Base):
     __tablename__ = "businesses"
 
@@ -38,13 +39,36 @@ class Business(Base):
         foreign_keys=[owner_id]
     )
 
+
+# ⭐ STEP 18 + STEP 19 — Conversation Sessions + Tags
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"))
+    started_at = Column(String)
+    last_message_at = Column(String)
+
+    # ⭐ NEW FOR STEP 19 — tags stored as comma-separated string
+    tags = Column(String, default="")
+
+    # Link to message logs
+    messages = relationship("MessageLog", back_populates="conversation")
+
+
 class MessageLog(Base):
     __tablename__ = "message_logs"
 
     id = Column(Integer, primary_key=True, index=True)
     business_id = Column(Integer, ForeignKey("businesses.id"))
-    sender = Column(String)
-    message = Column(Text)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"))
+
+    # ⭐ FIXED FIELDS — matches your /chat code
+    user_message = Column(Text)
+    bot_response = Column(Text)
+
+    # ⭐ FIXED: store timestamp as STRING, not DateTime
+    timestamp = Column(String, default=lambda: datetime.utcnow().isoformat())
 
     business = relationship("Business")
+    conversation = relationship("Conversation", back_populates="messages")
