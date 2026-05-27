@@ -5,8 +5,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 
-from backend.database import SessionLocal
-from backend.models import User
+from database import SessionLocal
+from models import User
 
 
 # ============================
