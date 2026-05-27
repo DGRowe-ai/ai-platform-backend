@@ -14,11 +14,11 @@ import stripe
 load_dotenv()
 
 # Database + models
-from backend.database import Base, engine, SessionLocal
-from backend.models import User, Business, MessageLog, Conversation
+from database import Base, engine, SessionLocal
+from models import User, Business, MessageLog, Conversation
 
 # Auth utilities
-from backend.auth_utils import (
+from auth_utils import (
     hash_password,
     verify_password,
     create_access_token,
