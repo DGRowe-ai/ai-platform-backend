@@ -1,10 +1,15 @@
 import smtplib
 from email.mime.text import MIMEText
+from dotenv import load_dotenv
+import os
 
-SMTP_SERVER = "smtp.gmail.com"
+# Load environment variables
+load_dotenv()
+
+SMTP_SERVER = "smtp.office365.com"
 SMTP_PORT = 587
-SMTP_USER = "rowe-ai@outlook.com"
-SMTP_PASSWORD = "e#E7e6tf@nue6@IR%fMr"
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 
 def send_email(to_email, subject, body):
     msg = MIMEText(body)
