@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
-from .database import SessionLocal
-from .models import Business
-from .email_utils import send_email
+from database import SessionLocal
+from models import Business
+from email_utils import send_email
 
 def send_inactivity_alerts():
     db = SessionLocal()

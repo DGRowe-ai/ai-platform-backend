@@ -1,5 +1,5 @@
-from .database import SessionLocal
-from .models import ChatMessage
+from database import SessionLocal
+from models import ChatMessage
 
 def save_message(business_id, user_id, role, message):
     db = SessionLocal()
