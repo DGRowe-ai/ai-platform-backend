@@ -72,4 +72,10 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 # ============================
 # ROLE GUARD
 # ============================
-def require_role(user: User
+def require_role(user: User, allowed_roles: list[str]):
+    """
+    Ensure the current user has one of the allowed roles.
+    Raises HTTPException(403) if not authorized.
+    """
+    if user.role not in allowed_roles:
+        raise HTTPException(status_code=403, detail="Not authorized")
