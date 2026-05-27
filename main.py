@@ -75,6 +75,9 @@ class ChatRequest(BaseModel):
     message: str
     conversation_id: int | None = None
 
+@app.get("/")
+def health_check():
+    return {"status": "ok"}
 
 # ============================
 # CHAT ROUTE (Step 27 updated)
