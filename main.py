@@ -27,16 +27,16 @@ from auth_utils import (
 
 
 # Business creation engine
-from backend.business_utils import create_business_for_user
+from business_utils import create_business_for_user
 
 # Audit + email + admin routes
-from backend.audit_utils import log_event
-from backend.email_utils import send_email
-from backend.admin_analytics import get_admin_analytics
-from backend.business_settings_routes import router as business_settings_router
+from audit_utils import log_event
+from email_utils import send_email
+from admin_analytics import get_admin_analytics
+from business_settings_routes import router as business_settings_router
 
 # ⭐ Step 26 — Business settings utilities
-from backend.business_settings_utils import get_settings
+from business_settings_utils import get_settings
 
 # Stripe setup
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
@@ -83,10 +83,9 @@ def health_check():
 # ============================
 # CHAT ROUTE (Step 27 updated)
 # ============================
-from backend.chat_history_utils import save_message, get_history
+from chat_history_utils import save_message, get_history
 from fastapi import Depends
-from backend.auth_utils import require_role
-
+from auth_utils import require_role
 @app.post("/chat")
 def chat(request: ChatRequest, user=Depends(get_current_user)):
     db = SessionLocal()
