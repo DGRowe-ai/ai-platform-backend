@@ -77,8 +77,12 @@ class ChatRequest(BaseModel):
 
 
 # ============================
-# CHAT ROUTE (Step 26 updated)
+# CHAT ROUTE (Step 27 updated)
 # ============================
+from backend.chat_history_utils import save_message, get_history
+from fastapi import Depends
+from backend.auth_utils import require_role
+
 @app.post("/chat")
 def chat(request: ChatRequest, user=Depends(get_current_user)):
     db = SessionLocal()
@@ -94,21 +98,30 @@ Greeting: {settings.greeting_message}
 Custom instructions: {settings.custom_instructions}
 """
 
-    # Prepare messages for OpenAI
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": request.message},
-    ]
+    # ⭐ Save user message
+    save_message(user.business_id, user.id, "user", request.message)
 
-    # Call OpenAI
+    # ⭐ Load message history for context
+    history = get_history(user.business_id)
+
+    # ⭐ Build conversation context for AI
+    conversation = [{"role": "system", "content": system_prompt}]
+    for msg in history:
+        conversation.append({"role": msg.role, "content": msg.message})
+    conversation.append({"role": "user", "content": request.message})
+
+    # ⭐ Call OpenAI
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=messages
+        messages=conversation
     )
 
     bot_reply = response.choices[0].message["content"]
 
-    # Log conversation
+    # ⭐ Save assistant reply
+    save_message(user.business_id, user.id, "assistant", bot_reply)
+
+    # ⭐ Log conversation (existing MessageLog)
     log = MessageLog(
         business_id=user.business_id,
         conversation_id=request.conversation_id,
@@ -121,6 +134,22 @@ Custom instructions: {settings.custom_instructions}
     db.close()
 
     return {"response": bot_reply}
+
+
+# ============================
+# BUSINESS CHAT HISTORY ROUTE
+# ============================
+@app.get("/business/history")
+def get_business_history(user=Depends(require_role("owner"))):
+    """
+    Fetch the last 200 chatbot messages for the current business.
+    Accessible only to business owners.
+    """
+    history = get_history(user.business_id, limit=200)
+    return history
+
+
+
 
 
 
