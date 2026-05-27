@@ -1,6 +1,6 @@
 from datetime import datetime
-from backend.database import SessionLocal
-from backend.models import AuditLog
+from database import SessionLocal
+from models import AuditLog
 
 
 def log_event(user_id: int, event_type: str, description: str):

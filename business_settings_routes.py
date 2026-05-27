@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from backend.auth_utils import get_current_user, require_role
-from backend.business_settings_utils import get_settings, update_settings
+from auth_utils import get_current_user, require_role
+from business_settings_utils import get_settings, update_settings
 
 router = APIRouter()
 

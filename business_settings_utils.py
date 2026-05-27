@@ -1,5 +1,5 @@
-from backend.database import SessionLocal
-from backend.models import BusinessSettings
+from database import SessionLocal
+from models import BusinessSettings
 
 
 def get_settings(business_id: int):

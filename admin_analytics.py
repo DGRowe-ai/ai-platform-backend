@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
-from backend.database import SessionLocal
-from backend.models import User, Business, AuditLog
+from database import SessionLocal
+from models import User, Business, AuditLog
 
 
 def get_admin_analytics():

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
-from backend.auth_utils import get_current_user, require_role
-from backend.admin_analytics import get_admin_analytics
+from auth_utils import get_current_user, require_role
+from admin_analytics import get_admin_analytics
 
 router = APIRouter()
 

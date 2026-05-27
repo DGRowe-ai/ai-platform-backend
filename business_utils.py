@@ -1,6 +1,6 @@
 import shutil
 from pathlib import Path
-from backend.models import Business
+from models import Business
 
 # Correct paths based on your project structure:
 # backend/businesses/template/
