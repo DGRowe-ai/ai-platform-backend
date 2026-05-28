@@ -72,6 +72,8 @@ def get_db():
 # ============================
 # CHAT REQUEST MODEL
 # ============================
+from fastapi import Response
+
 class ChatRequest(BaseModel):
     message: str
     conversation_id: int | None = None
@@ -79,6 +81,11 @@ class ChatRequest(BaseModel):
 @app.get("/")
 def health_check():
     return {"status": "ok"}
+
+@app.head("/")
+def health_check_head():
+    return Response(status_code=200)
+
 
 # ============================
 # CHAT ROUTE (Step 27 updated)
