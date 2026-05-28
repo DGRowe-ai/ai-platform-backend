@@ -69,11 +69,17 @@ def get_db():
         db.close()
 
 
-# ============================
-# CHAT REQUEST MODEL
-# ============================
-from fastapi import Response
+from fastapi import Response, Depends
+from pydantic import BaseModel
+from datetime import datetime
+from chat_history_utils import save_message, get_history
+from auth_utils import get_current_user, require_role
+from database import SessionLocal
+from openai_client import client  # your existing OpenAI client import
 
+# -------------------------------
+# CHAT REQUEST MODEL
+# -------------------------------
 class ChatRequest(BaseModel):
     message: str
     conversation_id: int | None = None
@@ -86,52 +92,49 @@ def health_check():
 def health_check_head():
     return Response(status_code=200)
 
-
-# ============================
+# -------------------------------
 # CHAT ROUTE (Step 27 updated)
-# ============================
-from chat_history_utils import save_message, get_history
-from fastapi import Depends
-from auth_utils import require_role
+# -------------------------------
 @app.post("/chat")
 def chat(request: ChatRequest, user=Depends(get_current_user)):
     db = SessionLocal()
 
-    # ⭐ Load business-level chatbot settings
+    # Load business-level chatbot settings
     settings = get_settings(user.business_id)
 
-    # ⭐ Build system prompt using business settings
+    # Build system prompt using business settings
     system_prompt = f"""
-You are a chatbot for this business.
-Tone: {settings.chatbot_tone}
-Greeting: {settings.greeting_message}
-Custom instructions: {settings.custom_instructions}
-"""
+    You are a chatbot for this business.
+    Tone: {settings.chatbot_tone}
+    Greeting: {settings.greeting_message}
+    Custom instructions: {settings.custom_instructions}
+    """
 
-    # ⭐ Save user message
+    # Save user message
     save_message(user.business_id, user.id, "user", request.message)
 
-    # ⭐ Load message history for context
+    # Load message history for context
     history = get_history(user.business_id)
 
-    # ⭐ Build conversation context for AI
+    # Build conversation context for AI
     conversation = [{"role": "system", "content": system_prompt}]
     for msg in history:
         conversation.append({"role": msg.role, "content": msg.message})
     conversation.append({"role": "user", "content": request.message})
 
-    # ⭐ Call OpenAI
+       # Call OpenAI
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=conversation
     )
 
-    bot_reply = response.choices[0].message["content"]
+    bot_reply = response.choices[0].message.content
 
-    # ⭐ Save assistant reply
+    # Save assistant reply
     save_message(user.business_id, user.id, "assistant", bot_reply)
 
-    # ⭐ Log conversation (existing MessageLog)
+
+    # Log conversation (existing MessageLog)
     log = MessageLog(
         business_id=user.business_id,
         conversation_id=request.conversation_id,
@@ -145,20 +148,20 @@ Custom instructions: {settings.custom_instructions}
 
     return {"response": bot_reply}
 
-
-# ============================
+# -------------------------------
 # BUSINESS CHAT HISTORY ROUTE
-# ============================
+# -------------------------------
 @app.get("/business/history")
-def get_business_history(
-    user=Depends(lambda user: require_role(user, ["owner"]))
-):
+def get_business_history(user=Depends(get_current_user)):
     """
     Fetch the last 200 chatbot messages for the current business.
     Accessible only to business owners.
     """
     history = get_history(user.business_id, limit=200)
     return history
+
+
+
 
 
 
