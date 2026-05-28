@@ -143,14 +143,16 @@ Custom instructions: {settings.custom_instructions}
 # BUSINESS CHAT HISTORY ROUTE
 # ============================
 @app.get("/business/history")
-def get_business_history(user=DependsDepends(lambda user: require_role(user, ["owner"]))
-(require_role("owner"))):
+def get_business_history(
+    user=Depends(lambda user: require_role(user, ["owner"]))
+):
     """
     Fetch the last 200 chatbot messages for the current business.
     Accessible only to business owners.
     """
     history = get_history(user.business_id, limit=200)
     return history
+
 
 
 
