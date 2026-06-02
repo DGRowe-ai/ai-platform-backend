@@ -550,16 +550,55 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     user.business_id = new_business.id
     db.commit()
 
+    # -------------------------------
+    # NEW EMAIL CODE (INDENTED!)
+    # -------------------------------
+    frontend_base = "https://ai-platform-frontend-uaaa.onrender.com"
+
+    chatbot_link = f"{frontend_base}/chat.html?b={user.business_id}"
+
+    embed_code = f"""
+    <!-- Rowe AI Chatbot -->
+    <script src="{frontend_base}/widget-frame.js?b={user.business_id}"></script>
+    """
+
+    email_body = f"""
+    Welcome to Rowe AI, {req.business_name}!
+
+    Your AI chatbot is now live and ready to use.
+
+    ----------------------------------------
+    Your Chatbot Link (for testing)
+    ----------------------------------------
+    {chatbot_link}
+
+    ----------------------------------------
+    Your Website Embed Code
+    ----------------------------------------
+    Paste this code anywhere on your website's HTML to activate your chatbot:
+
+    {embed_code}
+
+    ----------------------------------------
+    Need Help?
+    ----------------------------------------
+    If you need help installing the chatbot or customizing responses,
+    just reply to this email and we’ll take care of you.
+
+    Thanks for choosing Rowe AI!
+    """
+
     send_email(
         to_email=user.email,
-        subject="Welcome to Your AI Chatbot Platform!",
-        body="Thanks for signing up. Your chatbot is now ready to use.",
+        subject=f"Your Rowe AI Chatbot Is Ready, {req.business_name}!",
+        body=email_body,
     )
 
     return {
         "message": "Signup successful",
         "business_id": new_business.folder_name,
     }
+
 
 
 
