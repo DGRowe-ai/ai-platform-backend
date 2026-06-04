@@ -623,6 +623,83 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     }
 
 
+# ============================================================
+# ⭐ NEW ROUTE — ADD BUSINESS TO EXISTING USER (ADMIN ONLY)
+# ============================================================
+
+@app.post("/admin/create_business_for_existing_user")
+def create_business_for_existing_user(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin)
+):
+    email = data.get("email")
+    business_name = data.get("business_name")
+
+    if not email or not business_name:
+        raise HTTPException(status_code=400, detail="Email and business name required")
+
+    # Find the user
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Create the business
+    business = create_business_for_user(db, user, business_name)
+
+    return {"message": "Business created", "business_id": business.id}
+
+
+    # -------------------------------
+    # NEW EMAIL CODE (INDENTED!)
+    # -------------------------------
+    frontend_base = "https://ai-platform-frontend-uaaa.onrender.com"
+
+    chatbot_link = f"{frontend_base}/chat.html?b={user.business_id}"
+
+    embed_code = f"""
+    <!-- Rowe AI Chatbot -->
+    <script src="{frontend_base}/widget-frame.js?b={user.business_id}"></script>
+    """
+
+    email_body = f"""
+    Welcome to Rowe AI, {req.business_name}!
+
+    Your AI chatbot is now live and ready to use.
+
+    ----------------------------------------
+    Your Chatbot Link (for testing)
+    ----------------------------------------
+    {chatbot_link}
+
+    ----------------------------------------
+    Your Website Embed Code
+    ----------------------------------------
+    Paste this code anywhere on your website's HTML to activate your chatbot:
+
+    {embed_code}
+
+    ----------------------------------------
+    Need Help?
+    ----------------------------------------
+    If you need help installing the chatbot or customizing responses,
+    just reply to this email and we’ll take care of you.
+
+    Thanks for choosing Rowe AI!
+    """
+
+    send_email(
+        to_email=user.email,
+        subject=f"Your Rowe AI Chatbot Is Ready, {req.business_name}!",
+        body=email_body,
+    )
+
+    return {
+        "message": "Signup successful",
+        "business_id": new_business.folder_name,
+    }
+
+
 
 
 
