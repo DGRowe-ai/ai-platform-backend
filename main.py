@@ -471,27 +471,22 @@ def verify_password(password, hashed):
 @app.post("/business/chat")
 def business_chat(
     req: PublicChatRequest,
-    user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    require_subscription(user)
-
     business = (
         db.query(Business)
         .filter(Business.folder_name == req.business_id)
         .first()
     )
-    if not business or business.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
 
     # Usage limits
     tier = "starter"
     limits = {"starter": 500, "pro": 2000, "unlimited": 999_999}
     used = count_messages_this_month(db, business.id)
     if used >= limits[tier]:
-        return {
-            "response": "Monthly message limit reached. Please upgrade your plan."
-        }
+        return {"response": "Monthly message limit reached. Please upgrade your plan."}
 
     # Generate AI response
     data = load_business_data(req.business_id)
@@ -529,12 +524,6 @@ def business_chat(
     )
     db.add(log)
     db.commit()
-
-    log_event(
-        user_id=user.id,
-        event_type="chat_message",
-        description="User sent a chatbot message",
-    )
 
     return {"response": ai_response, "conversation_id": convo.id}
 
