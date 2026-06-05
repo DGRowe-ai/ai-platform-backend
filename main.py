@@ -508,12 +508,11 @@ def business_chat(
                 {"role": "user", "content": req.message},
             ],
             max_tokens=data["settings"]["max_response_length"],
-            timeout=15,  # Step 3 - AI timeout
+            timeout=15,
         ).choices[0].message.content
     except Exception:
         raise HTTPException(status_code=500, detail="AI timeout. Please try again.")
 
-    # Log message + conversation
     now_iso = datetime.utcnow().isoformat()
     convo = Conversation(
         business_id=business.id,
@@ -547,6 +546,16 @@ def business_chat(
 # -------------------------------------------------
 # Auth routes
 # -------------------------------------------------
+
+# ⭐ ADD THIS FUNCTION — EXACTLY HERE ⭐
+def get_current_admin(
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admins only")
+    return current_user
+
+
 @app.post("/signup")
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == req.email).first()
