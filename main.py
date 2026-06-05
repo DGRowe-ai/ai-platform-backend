@@ -494,10 +494,27 @@ def business_chat(
     try:
         ai_response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant."},
-                {"role": "user", "content": req.message},
-            ],
+messages=[
+    {
+        "role": "system",
+        "content": f"""
+You are Loki, the AI assistant for {data['profile']['name']}.
+Tone: {data['settings']['tone']}
+Greeting: {data['settings']['greeting_message']}
+
+Business Info:
+Name: {data['profile']['name']}
+Industry: {data['profile']['industry']}
+Email: {data['profile']['contact_email']}
+Website: {data['profile']['website']}
+
+Knowledge Base:
+{data['knowledge']}
+"""
+    },
+    {"role": "user", "content": req.message},
+]
+
             max_tokens=data["settings"]["max_response_length"],
             timeout=15,
         ).choices[0].message.content
