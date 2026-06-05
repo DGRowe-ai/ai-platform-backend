@@ -529,6 +529,50 @@ def business_chat(
 
 
 # -------------------------------------------------
+# BUSINESS UPDATE ROUTE - edit existing business info
+# -------------------------------------------------
+import json
+from pydantic import BaseModel
+
+class UpdateBusinessRequest(BaseModel):
+    folder_name: str
+    name: str
+    industry: str
+    contact_email: str
+    website: str
+    tone: str
+    greeting: str
+    instructions: str
+    knowledge: str
+
+
+@app.put("/business/update")
+def update_business(req: UpdateBusinessRequest):
+    folder = f"businesses/{req.folder_name}"
+
+    with open(f"{folder}/profile.json", "w") as f:
+        json.dump({
+            "name": req.name,
+            "industry": req.industry,
+            "contact_email": req.contact_email,
+            "website": req.website
+        }, f, indent=4)
+
+    with open(f"{folder}/settings.json", "w") as f:
+        json.dump({
+            "tone": req.tone,
+            "greeting_message": req.greeting,
+            "custom_instructions": req.instructions
+        }, f, indent=4)
+
+    with open(f"{folder}/knowledge.txt", "w") as f:
+        f.write(req.knowledge)
+
+    return {"message": "Business updated successfully"}
+
+
+
+# -------------------------------------------------
 # Auth routes
 # -------------------------------------------------
 
