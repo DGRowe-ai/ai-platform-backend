@@ -202,18 +202,19 @@ async def global_exception_handler(request: Request, exc: Exception):
 # CHAT ROUTE (Step 27 updated) - dashboard chat
 # -------------------------------------------------
 @app.post("/chat")
-def chat(request: ChatRequest, user=Depends(get_current_user)):
+def chat(request: ChatRequest):
     try:
         db = SessionLocal()
 
-        # STEP 2 - INPUT VALIDATION
         if not request.message or request.message.strip() == "":
             raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-        # Load business-level chatbot settings
-        settings = get_settings(user.business_id)
+        # Hardcode business_id for now (your real folder name)
+        business_id = "rowe_ai"
 
-        # Build system prompt using business settings
+        # Load business-level chatbot settings
+        settings = get_settings(business_id)
+
         system_prompt = f"""
         You are a chatbot for this business.
         Tone: {settings.chatbot_tone}
@@ -222,18 +223,15 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
         """
 
         # Save user message
-        save_message(user.business_id, user.id, "user", request.message)
+        save_message(business_id, None, "user", request.message)
 
-        # Load message history for context
-        history = get_history(user.business_id)
+        history = get_history(business_id)
 
-        # Build conversation context for AI
         conversation = [{"role": "system", "content": system_prompt}]
         for msg in history:
             conversation.append({"role": msg.role, "content": msg.message})
         conversation.append({"role": "user", "content": request.message})
 
-        # Call OpenAI (Step 3 - timeout added)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=conversation,
@@ -242,12 +240,10 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
 
         bot_reply = response.choices[0].message.content
 
-        # Save assistant reply
-        save_message(user.business_id, user.id, "assistant", bot_reply)
+        save_message(business_id, None, "assistant", bot_reply)
 
-        # Log conversation (existing MessageLog)
         log = MessageLog(
-            business_id=user.business_id,
+            business_id=business_id,
             conversation_id=request.conversation_id,
             user_message=request.message,
             bot_response=bot_reply,
@@ -260,13 +256,13 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
         return {"response": bot_reply}
 
     except Exception as e:
-        # STEP 5 - LOG UNEXPECTED ERRORS
         log_event(
-            user_id=user.id,
+            user_id=None,
             event_type="unexpected_error",
             description=str(e),
         )
         raise HTTPException(status_code=500, detail="Unexpected error occurred")
+
 
 
 # -------------------------------------------------
