@@ -1,11 +1,15 @@
+import os
 import shutil
 from pathlib import Path
 from models import Business
 
-# Correct paths based on your project structure:
-# backend/businesses/template/
-BASE_DIR = Path(__file__).parent
+# Always resolve paths relative to THIS file (works on Render)
+BASE_DIR = Path(__file__).resolve().parent
+
+# Businesses folder inside src (this is writable on Render)
 BUSINESSES_PATH = BASE_DIR / "businesses"
+
+# Template folder inside businesses
 TEMPLATE_PATH = BUSINESSES_PATH / "template"
 
 def create_business_for_user(db, user, business_name):
@@ -14,7 +18,7 @@ def create_business_for_user(db, user, business_name):
     new_path = BUSINESSES_PATH / folder_name
 
     # Ensure businesses directory exists
-    BUSINESSES_PATH.mkdir(exist_ok=True)
+    BUSINESSES_PATH.mkdir(parents=True, exist_ok=True)
 
     # Prevent overwriting existing business
     if new_path.exists():
