@@ -544,6 +544,7 @@ Knowledge Base:
     return {"response": ai_response, "conversation_id": convo.id}
 
 
+
 # -------------------------------------------------
 # BUSINESS UPDATE ROUTE - edit existing business info
 # -------------------------------------------------
