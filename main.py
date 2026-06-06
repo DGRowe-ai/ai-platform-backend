@@ -778,6 +778,25 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         "subscription_active": user.subscription_active,
         "role": user.role,
     }
+@app.post("/register")
+def register(req: LoginRequest, db: Session = Depends(get_db)):
+    # Check if user already exists
+    existing = db.query(User).filter(User.email == req.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="User already exists")
+
+    # Create new user
+    new_user = User(
+        email=req.email,
+        password_hash=hash_password(req.password),
+        role="owner",
+        subscription_active=True
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return {"message": "User created", "user_id": new_user.id}
 
 
 @app.post("/invite_user")
