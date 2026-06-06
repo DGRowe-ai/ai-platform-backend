@@ -282,6 +282,62 @@ def get_business_history(user=Depends(get_current_user)):
     history = get_history(user.business_id, limit=200)
     return history
 
+# -------------------------------------------------
+# PUBLIC BUSINESS CHAT ROUTE (for widget)
+# -------------------------------------------------
+@app.post("/business/chat")
+def public_business_chat(request: PublicChatRequest):
+    try:
+        db = SessionLocal()
+
+        if not request.message or request.message.strip() == "":
+            raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+        business_id = request.business_id
+
+        # Load business-level chatbot settings
+        settings = get_settings(business_id)
+
+        system_prompt = f"""
+        You are a chatbot for this business.
+        Tone: {settings.chatbot_tone}
+        Greeting: {settings.greeting_message}
+        Custom instructions: {settings.custom_instructions}
+        """
+
+        save_message(business_id, None, "user", request.message)
+        history = get_history(business_id)
+
+        conversation = [{"role": "system", "content": system_prompt}]
+        for msg in history:
+            conversation.append({"role": msg.role, "content": msg.message})
+        conversation.append({"role": "user", "content": request.message})
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=conversation,
+            timeout=15,
+        )
+
+        bot_reply = response.choices[0].message.content
+        save_message(business_id, None, "assistant", bot_reply)
+
+        log = MessageLog(
+            business_id=business_id,
+            conversation_id=None,
+            user_message=request.message,
+            bot_response=bot_reply,
+            timestamp=datetime.utcnow().isoformat(),
+        )
+        db.add(log)
+        db.commit()
+        db.close()
+
+        return {"response": bot_reply}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # -------------------------------------------------
 # SAVE CONVERSATION ROUTE
