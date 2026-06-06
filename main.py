@@ -779,12 +779,10 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     }
 @app.post("/register")
 def register(req: LoginRequest, db: Session = Depends(get_db)):
-    # Check if user already exists
     existing = db.query(User).filter(User.email == req.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
 
-    # Create new user
     new_user = User(
         email=req.email,
         password_hash=hash_password(req.password),
@@ -796,6 +794,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
     db.refresh(new_user)
 
     return {"message": "User created", "user_id": new_user.id}
+
 
 
 @app.post("/invite_user")
