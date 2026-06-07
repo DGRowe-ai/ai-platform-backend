@@ -35,16 +35,12 @@ app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 # -------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://ai-platform-frontend-uaaa.onrender.com",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],          # allow all origins
+    allow_credentials=False,      # no cookies, just Bearer token
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
+
 
 # -------------------------------------------------
 # Routers
@@ -107,8 +103,6 @@ def get_db():
     finally:
         db.close()
 
-Base.metadata.create_all(bind=engine)
-app.include_router(business_settings_router)
 
 
 
