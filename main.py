@@ -57,6 +57,8 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 # FastAPI app
 app = FastAPI()
+from admin_routes import router as admin_router
+app.include_router(admin_router)
 
 # -------------------------------------------------
 # CORS (Allow frontend to talk to backend)
