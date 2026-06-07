@@ -20,14 +20,34 @@ import io
 import zipfile
 import stripe
 
+# -------------------------------------------------
 # Load environment
+# -------------------------------------------------
 load_dotenv()
 
+# -------------------------------------------------
+# FastAPI app (enable docs)
+# -------------------------------------------------
+app = FastAPI(docs_url="/docs", redoc_url="/redoc")
+
+# -------------------------------------------------
+# Routers
+# -------------------------------------------------
+from admin_routes import router as admin_router
+from business_settings_routes import router as business_settings_router
+app.include_router(admin_router)
+app.include_router(business_settings_router)
+
+# -------------------------------------------------
 # Database + models
+# -------------------------------------------------
 from database import Base, engine, SessionLocal
 from models import User, Business, MessageLog, Conversation
+Base.metadata.create_all(bind=engine)
 
+# -------------------------------------------------
 # Auth utilities
+# -------------------------------------------------
 from auth_utils import (
     hash_password,
     verify_password,
@@ -35,30 +55,58 @@ from auth_utils import (
     get_current_user,
 )
 
+# -------------------------------------------------
 # Business creation engine
+# -------------------------------------------------
 from business_utils import create_business_for_user
 
-# Audit + email + admin routes
+# -------------------------------------------------
+# Audit + email + analytics utilities
+# -------------------------------------------------
 from audit_utils import log_event
 from email_utils import send_email
 from admin_analytics import get_admin_analytics
-from business_settings_routes import router as business_settings_router
-
-# Step 26 - Business settings utilities
 from business_settings_utils import get_settings
 
+# -------------------------------------------------
 # Stripe setup
+# -------------------------------------------------
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
+# -------------------------------------------------
 # OpenAI setup
+# -------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# FastAPI app
-app = FastAPI()
-from admin_routes import router as admin_router
-app.include_router(admin_router)
+# -------------------------------------------------
+# CORS (Allow frontend to talk to backend)
+# -------------------------------------------------
+origins = [
+    "https://ai-platform-frontend-uaaa.onrender.com",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -------------------------------------------------
+# Database session dependency
+# -------------------------------------------------
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 
 # -------------------------------------------------
 # CORS (Allow frontend to talk to backend)
