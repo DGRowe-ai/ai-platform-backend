@@ -766,7 +766,7 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
 def create_business_for_existing_user(
     data: dict,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin)
+    current_user: User = Depends(get_current_user)
 ):
     email = data.get("email")
     business_name = data.get("business_name")
@@ -850,7 +850,17 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     if not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token({"user_id": user.id})
+@app.post("/login")
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == req.email).first()
+    # ...
+    token = create_access_token({
+        "user_id": user.id,
+        "role": user.role,
+        "subscription_active": user.subscription_active,
+        "business_id": user.business_id
+    })
+
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -858,6 +868,8 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         "subscription_active": user.subscription_active,
         "role": user.role,
     }
+
+
 @app.post("/register")
 def register(req: LoginRequest, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == req.email).first()
