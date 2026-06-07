@@ -804,6 +804,29 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 
     return {"message": "User created", "user_id": new_user.id}
 
+@app.post("/login")
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == req.email).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not verify_password(req.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token({
+        "user_id": user.id,
+        "role": user.role,
+        "subscription_active": user.subscription_active,
+        "business_id": user.business_id
+    })
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "subscription_active": user.subscription_active,
+        "role": user.role
+    }
 
 
 @app.post("/invite_user")
