@@ -31,6 +31,22 @@ load_dotenv()
 app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 
 # -------------------------------------------------
+# CORS (Allow frontend to talk to backend)
+# -------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://ai-platform-frontend-uaaa.onrender.com",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+# -------------------------------------------------
 # Routers
 # -------------------------------------------------
 from admin_routes import router as admin_router
@@ -80,21 +96,6 @@ WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# -------------------------------------------------
-# CORS (Allow frontend to talk to backend)
-# -------------------------------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://ai-platform-frontend-uaaa.onrender.com",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
 
 # -------------------------------------------------
 # Database session dependency
