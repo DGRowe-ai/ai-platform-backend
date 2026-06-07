@@ -83,18 +83,17 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # -------------------------------------------------
 # CORS (Allow frontend to talk to backend)
 # -------------------------------------------------
-origins = [
-    "https://ai-platform-frontend-uaaa.onrender.com",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=[
+        "https://ai-platform-frontend-uaaa.onrender.com",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # -------------------------------------------------
@@ -106,35 +105,10 @@ def get_db():
         yield db
     finally:
         db.close()
-
-
-# -------------------------------------------------
-# CORS (Allow frontend to talk to backend)
-# -------------------------------------------------
-origins = [
-    "https://ai-platform-frontend-uaaa.onrender.com",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 Base.metadata.create_all(bind=engine)
 app.include_router(business_settings_router)
 
-# Database session dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 
