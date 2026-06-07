@@ -35,10 +35,11 @@ app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 # -------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # allow all origins
-    allow_credentials=False,      # no cookies, just Bearer token
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],   # ← ADD THIS
 )
 
 
@@ -451,6 +452,11 @@ def load_business_data(business_id: str):
 # -------------------------------------------------
 # Basic routes
 # -------------------------------------------------
+@app.options("/my_businesses")
+def options_my_businesses():
+    return Response(status_code=200)
+
+
 @app.get("/ping")
 def ping():
     return {"message": "pong"}
