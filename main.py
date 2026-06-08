@@ -40,6 +40,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+@app.options("/login")
+def options_login():
+    return Response(status_code=200)
+
+@app.post("/login")
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    ...
 
 
 # -------------------------------------------------
@@ -799,12 +806,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 
     return {"message": "User created", "user_id": new_user.id}
 
-@app.options("/login")
-def options_login():
-    return Response(status_code=200)
 
-@app.post("/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
