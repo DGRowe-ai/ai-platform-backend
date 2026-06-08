@@ -31,7 +31,7 @@ load_dotenv()
 app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 
 # -------------------------------------------------
-# CORS (Allow frontend to talk to backend)
+# CORS
 # -------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -40,22 +40,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 @app.options("/login")
 def options_login():
     return Response(status_code=200)
-
-@app.post("/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
-    ...
-
-
-# -------------------------------------------------
-# Routers
-# -------------------------------------------------
-from admin_routes import router as admin_router
-from business_settings_routes import router as business_settings_router
-app.include_router(admin_router)
-app.include_router(business_settings_router)
 
 # -------------------------------------------------
 # Database + models
@@ -72,6 +60,7 @@ from auth_utils import (
     verify_password,
     create_access_token,
     get_current_user,
+    require_role,
 )
 
 # -------------------------------------------------
@@ -99,7 +88,6 @@ WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-
 # -------------------------------------------------
 # Database session dependency
 # -------------------------------------------------
@@ -110,16 +98,10 @@ def get_db():
     finally:
         db.close()
 
-
-
-
-
 # -------------------------------------------------
-# Chat history utilities imports (already in project)
+# Chat history utilities
 # -------------------------------------------------
 from chat_history_utils import save_message, get_history
-from auth_utils import require_role  # already imported get_current_user above
-
 
 # -------------------------------------------------
 # Request models
@@ -128,38 +110,41 @@ class CreateBusinessRequest(BaseModel):
     owner_id: int
     business_name: str
 
-
-# Dashboard chat request (Step 27 updated)
 class ChatRequest(BaseModel):
     message: str
     conversation_id: int | None = None
 
-
 class PublicChatRequest(BaseModel):
     business_id: str
     message: str
-
 
 class SignupRequest(BaseModel):
     email: str
     password: str
     business_name: str
 
-
 class LoginRequest(BaseModel):
     email: str
     password: str
-
 
 class InviteRequest(BaseModel):
     email: str
     role: str  # "admin" or "staff"
 
-
 class SetPasswordRequest(BaseModel):
     user_id: int
     password: str
 
+class UpdateBusinessRequest(BaseModel):
+    folder_name: str
+    name: str
+    industry: str
+    contact_email: str
+    website: str
+    tone: str
+    greeting: str
+    instructions: str
+    knowledge: str
 
 # -------------------------------------------------
 # Guards
@@ -169,11 +154,9 @@ def require_subscription(user: User = Depends(get_current_user)):
         raise HTTPException(status_code=402, detail="Subscription required")
     return user
 
-
 def require_role_guard(user: User, allowed_roles: list[str]):
     if user.role not in allowed_roles:
         raise HTTPException(status_code=403, detail="Not authorized")
-
 
 # -------------------------------------------------
 # Analytics helper
@@ -190,7 +173,6 @@ def count_messages_this_month(db: Session, business_id: int) -> int:
         .count()
     )
 
-
 # -------------------------------------------------
 # Health check
 # -------------------------------------------------
@@ -198,14 +180,12 @@ def count_messages_this_month(db: Session, business_id: int) -> int:
 def health_check():
     return {"status": "ok"}
 
-
 @app.head("/")
 def health_check_head():
     return Response(status_code=200)
 
-
 # -------------------------------------------------
-# Global exception handler (Step 30)
+# Global exception handler
 # -------------------------------------------------
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -223,9 +203,64 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"error": "Something went wrong. Please try again."},
     )
 
+# -------------------------------------------------
+# LOGIN ROUTE
+# -------------------------------------------------
+@app.post("/login")
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == req.email).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not verify_password(req.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = create_access_token({
+        "user_id": user.id,
+        "role": user.role,
+        "subscription_active": user.subscription_active,
+        "business_id": user.business_id
+    })
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "subscription_active": user.subscription_active,
+        "role": user.role
+    }
 
 # -------------------------------------------------
-# CHAT ROUTE (Step 27 updated) - dashboard chat
+# REGISTER ROUTE
+# -------------------------------------------------
+@app.post("/register")
+def register(req: LoginRequest, db: Session = Depends(get_db)):
+    existing = db.query(User).filter(User.email == req.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="User already exists")
+
+    new_user = User(
+        email=req.email,
+        password_hash=hash_password(req.password),
+        role="owner",
+        subscription_active=True
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return {"message": "User created", "user_id": new_user.id}
+
+# -------------------------------------------------
+# Routers
+# -------------------------------------------------
+from admin_routes import router as admin_router
+from business_settings_routes import router as business_settings_router
+app.include_router(admin_router)
+app.include_router(business_settings_router)
+
+# -------------------------------------------------
+# DASHBOARD CHAT ROUTE
 # -------------------------------------------------
 @app.post("/chat")
 def chat(request: ChatRequest):
@@ -235,10 +270,7 @@ def chat(request: ChatRequest):
         if not request.message or request.message.strip() == "":
             raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-        # Hardcode business_id for now (your real folder name)
         business_id = "rowe_ai"
-
-        # Load business-level chatbot settings
         settings = get_settings(business_id)
 
         system_prompt = f"""
@@ -248,9 +280,7 @@ def chat(request: ChatRequest):
         Custom instructions: {settings.custom_instructions}
         """
 
-        # Save user message
         save_message(business_id, None, "user", request.message)
-
         history = get_history(business_id)
 
         conversation = [{"role": "system", "content": system_prompt}]
@@ -289,19 +319,11 @@ def chat(request: ChatRequest):
         )
         raise HTTPException(status_code=500, detail="Unexpected error occurred")
 
-
-
 # -------------------------------------------------
 # BUSINESS CHAT HISTORY ROUTE
 # -------------------------------------------------
 @app.get("/business/history")
 def get_business_history(user=Depends(get_current_user)):
-    """
-    Fetch the last 200 chatbot messages for the current business.
-    Accessible only to business owners.
-    """
-
-    # STEP 6 - ROLE CHECK (only owners can view history)
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -309,7 +331,7 @@ def get_business_history(user=Depends(get_current_user)):
     return history
 
 # -------------------------------------------------
-# PUBLIC BUSINESS CHAT ROUTE (for widget)
+# PUBLIC BUSINESS CHAT ROUTE (widget)
 # -------------------------------------------------
 @app.post("/business/chat")
 def public_business_chat(request: PublicChatRequest):
@@ -320,8 +342,6 @@ def public_business_chat(request: PublicChatRequest):
             raise HTTPException(status_code=400, detail="Message cannot be empty")
 
         business_id = request.business_id
-
-        # Load business-level chatbot settings
         settings = get_settings(business_id)
 
         system_prompt = f"""
@@ -364,7 +384,6 @@ def public_business_chat(request: PublicChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # -------------------------------------------------
 # SAVE CONVERSATION ROUTE
 # -------------------------------------------------
@@ -374,13 +393,6 @@ def save_conversation(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Saves a conversation record with title + summary.
-    Staff can save their own conversations.
-    Admins/Owners can save any conversation in the business.
-    """
-
-    # STEP 6 - ROLE CHECK
     if user.role not in ["owner", "admin", "staff"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -404,7 +416,6 @@ def save_conversation(
 
     return {"conversation_id": convo.id, "status": "saved"}
 
-
 # -------------------------------------------------
 # DELETE CONVERSATION ROUTE
 # -------------------------------------------------
@@ -414,13 +425,6 @@ def delete_conversation(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Deletes a conversation.
-    Owners/Admins can delete any conversation in the business.
-    Staff can delete only their own conversations.
-    """
-
-    # Fetch conversation
     convo = (
         db.query(Conversation)
         .filter(
@@ -433,16 +437,13 @@ def delete_conversation(
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # STEP 6 - ROLE CHECK
     if user.role == "staff" and convo.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Delete conversation
     db.delete(convo)
     db.commit()
 
     return {"status": "deleted", "conversation_id": convo_id}
-
 
 # -------------------------------------------------
 # Load business data from filesystem
@@ -454,21 +455,16 @@ def load_business_data(business_id: str):
     knowledge = (base / "knowledge.txt").read_text()
     return {"profile": profile, "settings": settings, "knowledge": knowledge}
 
-
 # -------------------------------------------------
 # Basic routes
 # -------------------------------------------------
-from fastapi import Response
-
 @app.options("/my_businesses")
 def options_my_businesses():
     return Response(status_code=200)
 
-
 @app.get("/ping")
 def ping():
     return {"message": "pong"}
-
 
 @app.get("/my_businesses")
 def my_businesses(
@@ -477,7 +473,6 @@ def my_businesses(
 ):
     require_subscription(user)
 
-    # STEP 6 - ROLE CHECK (only owners can view their businesses)
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -487,7 +482,6 @@ def my_businesses(
         for b in businesses
     ]
 
-
 @app.get("/business/{business_id}")
 def get_business(
     business_id: str,
@@ -496,7 +490,6 @@ def get_business(
 ):
     require_subscription(user)
 
-    # STEP 6 - ROLE CHECK (only owners can load business data)
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -514,7 +507,6 @@ def get_business(
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Business not found")
 
-
 @app.post("/create-business")
 def create_business_route(
     req: CreateBusinessRequest,
@@ -523,7 +515,6 @@ def create_business_route(
 ):
     require_subscription(user)
 
-    # STEP 6 - ROLE CHECK (only owners can create businesses)
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -540,12 +531,10 @@ def create_business_route(
         "business_id": new_business.folder_name,
     }
 
-
-
 # -------------------------------------------------
-# PUBLIC / BUSINESS CHAT ROUTE (separate from dashboard /chat)
+# PUBLIC / BUSINESS CHAT ROUTE (AI with knowledge)
 # -------------------------------------------------
-@app.post("/business/chat")
+@app.post("/business/chat_ai")
 def business_chat(
     req: PublicChatRequest,
     db: Session = Depends(get_db),
@@ -558,14 +547,12 @@ def business_chat(
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    # Usage limits
     tier = "starter"
     limits = {"starter": 500, "pro": 2000, "unlimited": 999_999}
     used = count_messages_this_month(db, business.id)
     if used >= limits[tier]:
         return {"response": "Monthly message limit reached. Please upgrade your plan."}
 
-    # Generate AI response
     data = load_business_data(req.business_id)
 
     try:
@@ -620,26 +607,9 @@ Knowledge Base:
 
     return {"response": ai_response, "conversation_id": convo.id}
 
-
-
 # -------------------------------------------------
-# BUSINESS UPDATE ROUTE - edit existing business info
+# BUSINESS UPDATE ROUTE
 # -------------------------------------------------
-import json
-from pydantic import BaseModel
-
-class UpdateBusinessRequest(BaseModel):
-    folder_name: str
-    name: str
-    industry: str
-    contact_email: str
-    website: str
-    tone: str
-    greeting: str
-    instructions: str
-    knowledge: str
-
-
 @app.put("/business/update")
 def update_business(req: UpdateBusinessRequest):
     folder = f"businesses/{req.folder_name}"
@@ -664,20 +634,15 @@ def update_business(req: UpdateBusinessRequest):
 
     return {"message": "Business updated successfully"}
 
-
-
 # -------------------------------------------------
-# Auth routes
+# Auth helpers and routes
 # -------------------------------------------------
-
-# ⭐ ADD THIS FUNCTION — EXACTLY HERE ⭐
 def get_current_admin(
     current_user: User = Depends(get_current_user)
 ):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admins only")
     return current_user
-
 
 @app.post("/signup")
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
@@ -705,13 +670,8 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     user.business_id = new_business.id
     db.commit()
 
-    # -------------------------------
-    # NEW EMAIL CODE (INDENTED!)
-    # -------------------------------
     frontend_base = "https://ai-platform-frontend-uaaa.onrender.com"
-
     chatbot_link = f"{frontend_base}/chat.html?b={user.business_id}"
-
     embed_code = f"""
     <!-- Rowe AI Chatbot -->
     <script src="{frontend_base}/widget-frame.js?b={user.business_id}"></script>
@@ -754,11 +714,6 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
         "business_id": new_business.folder_name,
     }
 
-
-# ============================================================
-# ⭐ NEW ROUTE — ADD BUSINESS TO EXISTING USER (ADMIN ONLY)
-# ============================================================
-
 @app.post("/admin/create_business_for_existing_user")
 def create_business_for_existing_user(
     data: dict,
@@ -771,64 +726,13 @@ def create_business_for_existing_user(
     if not email or not business_name:
         raise HTTPException(status_code=400, detail="Email and business name required")
 
-    # Find the user
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Create the business
     business = create_business_for_user(db, user, business_name)
 
     return {"message": "Business created", "business_id": business.id}
-
-from pydantic import BaseModel
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-@app.post("/register")
-def register(req: LoginRequest, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == req.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="User already exists")
-
-    new_user = User(
-        email=req.email,
-        password_hash=hash_password(req.password),
-        role="owner",
-        subscription_active=True
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    return {"message": "User created", "user_id": new_user.id}
-
-
-    user = db.query(User).filter(User.email == req.email).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    if not verify_password(req.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    token = create_access_token({
-        "user_id": user.id,
-        "role": user.role,
-        "subscription_active": user.subscription_active,
-        "business_id": user.business_id
-    })
-
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user_id": user.id,
-        "subscription_active": user.subscription_active,
-        "role": user.role
-    }
-
 
 @app.post("/invite_user")
 def invite_user(
@@ -837,8 +741,6 @@ def invite_user(
     db: Session = Depends(get_db),
 ):
     require_subscription(user)
-
-    # STEP 6 - ROLE CHECK (only owners can invite users)
     require_role_guard(user, ["owner"])
 
     if req.role not in ["admin", "staff"]:
@@ -846,7 +748,7 @@ def invite_user(
 
     new_user = User(
         email=req.email,
-        password_hash="",  # invited users set password later
+        password_hash="",
         role=req.role,
         business_id=user.business_id,
     )
@@ -856,7 +758,6 @@ def invite_user(
 
     return {"message": "User invited"}
 
-
 @app.get("/team")
 def team(
     user=Depends(get_current_user),
@@ -864,8 +765,6 @@ def team(
 ):
     require_subscription(user)
 
-    # STEP 6 - ROLE CHECK
-    # Owners and admins can view the team list.
     if user.role not in ["owner", "admin"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -882,7 +781,6 @@ def team(
 
     return [{"id": u.id, "email": u.email, "role": u.role} for u in users]
 
-
 # -------------------------------------------------
 # Export routes
 # -------------------------------------------------
@@ -892,7 +790,6 @@ def export_conversation(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # STEP 6 - ROLE CHECK
     if user.role not in ["owner", "admin"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -921,18 +818,15 @@ def export_conversation(
 
     return csv_data
 
-
 @app.get("/export/business/{business_id}")
 def export_business(
     business_id: str,
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # STEP 6 - OWNER ONLY
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Validate business belongs to the owner
     business = (
         db.query(Business)
         .filter(Business.folder_name == business_id)
@@ -942,13 +836,11 @@ def export_business(
     if not business or business.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Build path to business folder
     business_path = os.path.join("businesses", business_id)
 
     if not os.path.exists(business_path):
         raise HTTPException(status_code=404, detail="Business folder not found")
 
-    # Create ZIP in memory
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
         for root, dirs, files in os.walk(business_path):
@@ -966,7 +858,6 @@ def export_business(
             "Content-Disposition": f"attachment; filename={business_id}.zip"
         },
     )
-
 
 @app.get("/export/all")
 def export_all(
@@ -989,7 +880,6 @@ def export_all(
         )
 
     return csv_data
-
 
 @app.post("/export/filtered")
 def export_filtered(
@@ -1019,7 +909,6 @@ def export_filtered(
 
     return csv_data
 
-
 # -------------------------------------------------
 # Stripe Webhook
 # -------------------------------------------------
@@ -1031,7 +920,6 @@ async def stripe_webhook(
 ):
     payload = await request.body()
 
-    # STEP 4 - STRIPE SIGNATURE VERIFICATION
     try:
         event = stripe.Webhook.construct_event(
             payload=payload,
@@ -1046,7 +934,6 @@ async def stripe_webhook(
     event_type = event["type"]
     data = event["data"]["object"]
 
-    # 1. Handle checkout completion
     if event_type == "checkout.session.completed":
         email = data.get("customer_email")
         user = db.query(User).filter(User.email == email).first()
@@ -1059,7 +946,6 @@ async def stripe_webhook(
                 description="Stripe checkout completed",
             )
 
-    # 2. Handle payment failure
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")
         user = (
@@ -1079,7 +965,6 @@ async def stripe_webhook(
                 body="Your recent payment failed. Please update your billing information.",
             )
 
-    # 3. Handle subscription canceled
     elif event_type == "customer.subscription.deleted":
         customer_id = data.get("customer")
         user = (
