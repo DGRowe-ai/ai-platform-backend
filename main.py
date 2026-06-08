@@ -786,6 +786,11 @@ def create_business_for_existing_user(
 
     return {"message": "Business created", "business_id": business.id}
 
+from pydantic import BaseModel
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 @app.post("/register")
@@ -805,6 +810,10 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
     db.refresh(new_user)
 
     return {"message": "User created", "user_id": new_user.id}
+
+@app.options("/login")
+def options_login():
+    return Response(status_code=200)
 
 @app.post("/login")
 def login(req: LoginRequest, db: Session = Depends(get_db)):
