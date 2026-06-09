@@ -39,7 +39,7 @@ load_dotenv()
 app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 
 # -------------------------------------------------
-# CORS - FIXED for proper cross-origin support
+# ADD CORS MIDDLEWARE IMMEDIATELY - BEFORE ANY OTHER MIDDLEWARE
 # -------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -51,17 +51,13 @@ app.add_middleware(
         "http://127.0.0.1:5500",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
-# Handle preflight requests
-@app.options("/{full_path:path}")
-async def preflight_handler(full_path: str):
-    return Response(status_code=200)
-
 # -------------------------------------------------
-# Database + models
+# Database + models (AFTER CORS)
 # -------------------------------------------------
 from database import Base, engine, SessionLocal
 from models import User, Business, MessageLog, Conversation
