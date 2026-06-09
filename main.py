@@ -19,6 +19,15 @@ import os
 import io
 import zipfile
 import stripe
+import logging
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+logger = logging.getLogger(__name__)
 
 # -------------------------------------------------
 # Load environment
@@ -47,13 +56,7 @@ app.add_middleware(
 # -------------------------------------------------
 # CORS
 # -------------------------------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
 
 @app.options("/login")
 def options_login():
@@ -177,12 +180,22 @@ def require_role_guard(user: User, allowed_roles: list[str]):
 # -------------------------------------------------
 def count_messages_this_month(db: Session, business_id: int) -> int:
     now = datetime.utcnow()
-    month = now.strftime("%Y-%m")
+
+    # Start of the current month
+    month_start = datetime(now.year, now.month, 1)
+
+    # Start of the next month (handles December correctly)
+    if now.month == 12:
+        month_end = datetime(now.year + 1, 1, 1)
+    else:
+        month_end = datetime(now.year, now.month + 1, 1)
+
     return (
         db.query(MessageLog)
         .filter(
             MessageLog.business_id == business_id,
-            MessageLog.timestamp.startswith(month),
+            MessageLog.timestamp >= month_start.isoformat(),
+            MessageLog.timestamp < month_end.isoformat(),
         )
         .count()
     )
@@ -209,13 +222,14 @@ async def global_exception_handler(request: Request, exc: Exception):
             event_type="server_error",
             description=str(exc),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Failed to log audit event: {e}")
 
     return JSONResponse(
         status_code=500,
         content={"error": "Something went wrong. Please try again."},
     )
+
 
 # -------------------------------------------------
 # LOGIN ROUTE
@@ -274,129 +288,83 @@ app.include_router(admin_router)
 app.include_router(business_settings_router)
 
 # -------------------------------------------------
-# DASHBOARD CHAT ROUTE
+# SHARED CHAT EXECUTION HELPER
+# -------------------------------------------------
+def _execute_chat(
+    business_id: str,
+    message: str,
+    db: Session,
+    conversation_id: int | None = None,
+):
+    settings = get_settings(business_id)
+
+    system_prompt = f"""
+    You are a chatbot for this business.
+    Tone: {settings.chatbot_tone}
+    Greeting: {settings.greeting_message}
+    Custom instructions: {settings.custom_instructions}
+    """
+
+    save_message(business_id, conversation_id, "user", message)
+    history = get_history(business_id)
+
+    conversation = [{"role": "system", "content": system_prompt}]
+    for msg in history:
+        conversation.append({"role": msg.role, "content": msg.message})
+    conversation.append({"role": "user", "content": message})
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=conversation,
+        timeout=15,
+    )
+
+    bot_reply = response.choices[0].message.content
+    save_message(business_id, conversation_id, "assistant", bot_reply)
+
+    return bot_reply
+
+
+# -------------------------------------------------
+# DASHBOARD CHAT ROUTE (FIXED)
 # -------------------------------------------------
 @app.post("/chat")
-def chat(request: ChatRequest):
-    try:
-        db = SessionLocal()
+def chat(
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if not request.message or request.message.strip() == "":
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-        if not request.message or request.message.strip() == "":
-            raise HTTPException(status_code=400, detail="Message cannot be empty")
+    bot_reply = _execute_chat(
+        business_id=current_user.business_id,
+        message=request.message,
+        db=db,
+        conversation_id=request.conversation_id,
+    )
 
-        business_id = "rowe_ai"
-        settings = get_settings(business_id)
-
-        system_prompt = f"""
-        You are a chatbot for this business.
-        Tone: {settings.chatbot_tone}
-        Greeting: {settings.greeting_message}
-        Custom instructions: {settings.custom_instructions}
-        """
-
-        save_message(business_id, None, "user", request.message)
-        history = get_history(business_id)
-
-        conversation = [{"role": "system", "content": system_prompt}]
-        for msg in history:
-            conversation.append({"role": msg.role, "content": msg.message})
-        conversation.append({"role": "user", "content": request.message})
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=conversation,
-            timeout=15,
-        )
-
-        bot_reply = response.choices[0].message.content
-
-        save_message(business_id, None, "assistant", bot_reply)
-
-        log = MessageLog(
-            business_id=business_id,
-            conversation_id=request.conversation_id,
-            user_message=request.message,
-            bot_response=bot_reply,
-            timestamp=datetime.utcnow().isoformat(),
-        )
-        db.add(log)
-        db.commit()
-        db.close()
-
-        return {"response": bot_reply}
-
-    except Exception as e:
-        log_event(
-            user_id=None,
-            event_type="unexpected_error",
-            description=str(e),
-        )
-        raise HTTPException(status_code=500, detail="Unexpected error occurred")
+    return {"response": bot_reply}
 
 # -------------------------------------------------
 # BUSINESS CHAT HISTORY ROUTE
 # -------------------------------------------------
-@app.get("/business/history")
-def get_business_history(user=Depends(get_current_user)):
-    if user.role != "owner":
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    history = get_history(user.business_id, limit=200)
-    return history
-
-# -------------------------------------------------
-# PUBLIC BUSINESS CHAT ROUTE (widget)
-# -------------------------------------------------
 @app.post("/business/chat")
-def public_business_chat(request: PublicChatRequest):
-    try:
-        db = SessionLocal()
+def public_business_chat(
+    request: PublicChatRequest,
+    db: Session = Depends(get_db),
+):
+    if not request.message or request.message.strip() == "":
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-        if not request.message or request.message.strip() == "":
-            raise HTTPException(status_code=400, detail="Message cannot be empty")
+    bot_reply = _execute_chat(
+        business_id=request.business_id,
+        message=request.message,
+        db=db,
+        conversation_id=None,
+    )
 
-        business_id = request.business_id
-        settings = get_settings(business_id)
-
-        system_prompt = f"""
-        You are a chatbot for this business.
-        Tone: {settings.chatbot_tone}
-        Greeting: {settings.greeting_message}
-        Custom instructions: {settings.custom_instructions}
-        """
-
-        save_message(business_id, None, "user", request.message)
-        history = get_history(business_id)
-
-        conversation = [{"role": "system", "content": system_prompt}]
-        for msg in history:
-            conversation.append({"role": msg.role, "content": msg.message})
-        conversation.append({"role": "user", "content": request.message})
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=conversation,
-            timeout=15,
-        )
-
-        bot_reply = response.choices[0].message.content
-        save_message(business_id, None, "assistant", bot_reply)
-
-        log = MessageLog(
-            business_id=business_id,
-            conversation_id=None,
-            user_message=request.message,
-            bot_response=bot_reply,
-            timestamp=datetime.utcnow().isoformat(),
-        )
-        db.add(log)
-        db.commit()
-        db.close()
-
-        return {"response": bot_reply}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"response": bot_reply}
 
 # -------------------------------------------------
 # SAVE CONVERSATION ROUTE
@@ -552,6 +520,7 @@ def create_business_route(
 def business_chat(
     req: PublicChatRequest,
     db: Session = Depends(get_db),
+    request: Request = None,  # <-- needed for IP address
 ):
     business = (
         db.query(Business)
@@ -561,6 +530,18 @@ def business_chat(
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+    # -----------------------------
+    # RATE LIMITING (Step 6.2)
+    # -----------------------------
+    ip = request.client.host
+
+    if not check_rate_limit(db, business.id, ip):
+        raise HTTPException(status_code=429, detail="Too many requests. Slow down.")
+
+    record_rate_limit(db, business.id, ip)
+    # -----------------------------
+
+    # Monthly usage limits (existing)
     tier = "starter"
     limits = {"starter": 500, "pro": 2000, "unlimited": 999_999}
     used = count_messages_this_month(db, business.id)
@@ -595,8 +576,10 @@ Knowledge Base:
             max_tokens=data["settings"]["max_response_length"],
             timeout=15,
         ).choices[0].message.content
-    except Exception:
-        raise HTTPException(status_code=500, detail="AI timeout. Please try again.")
+
+    except Exception as e:
+        logger.error(f"Chat error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Chat service unavailable")
 
     now_iso = datetime.utcnow().isoformat()
     convo = Conversation(
@@ -621,32 +604,6 @@ Knowledge Base:
 
     return {"response": ai_response, "conversation_id": convo.id}
 
-# -------------------------------------------------
-# BUSINESS UPDATE ROUTE
-# -------------------------------------------------
-@app.put("/business/update")
-def update_business(req: UpdateBusinessRequest):
-    folder = f"businesses/{req.folder_name}"
-
-    with open(f"{folder}/profile.json", "w") as f:
-        json.dump({
-            "name": req.name,
-            "industry": req.industry,
-            "contact_email": req.contact_email,
-            "website": req.website
-        }, f, indent=4)
-
-    with open(f"{folder}/settings.json", "w") as f:
-        json.dump({
-            "tone": req.tone,
-            "greeting_message": req.greeting,
-            "custom_instructions": req.instructions
-        }, f, indent=4)
-
-    with open(f"{folder}/knowledge.txt", "w") as f:
-        f.write(req.knowledge)
-
-    return {"message": "Business updated successfully"}
 
 # -------------------------------------------------
 # Auth helpers and routes
@@ -791,9 +748,24 @@ def team(
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
+@app.post("/some/route")
+def some_route(req: PublicChatRequest, db: Session = Depends(get_db)):
+    # -----------------------------
+    # INPUT VALIDATION (Step 6.3)
+    # -----------------------------
+    if not req.message or len(req.message.strip()) == 0:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    if len(req.message) > 2000:
+        raise HTTPException(status_code=400, detail="Message too long (max 2000 characters).")
+    # -----------------------------
+
     users = db.query(User).filter(User.business_id == business.id).all()
 
     return [{"id": u.id, "email": u.email, "role": u.role} for u in users]
+
+
+
 
 # -------------------------------------------------
 # Export routes

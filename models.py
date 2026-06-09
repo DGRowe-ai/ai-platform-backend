@@ -122,9 +122,11 @@ class BusinessSettings(Base):
         default="friendly",  # friendly, professional, casual
     )
     custom_instructions = Column(Text, default="")
-from sqlalchemy import Column, Integer, Text, DateTime
-from datetime import datetime
 
+
+# ============================
+# CHAT MESSAGE LOG (Dashboard Chat)
+# ============================
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
@@ -133,4 +135,16 @@ class ChatMessage(Base):
     user_id = Column(Integer, index=True)
     role = Column(Text)  # "user" or "assistant"
     message = Column(Text)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+# ============================
+# RATE LIMIT TABLE (Step 6.2)
+# ============================
+class RateLimit(Base):
+    __tablename__ = "rate_limits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, index=True)
+    ip_address = Column(String, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
