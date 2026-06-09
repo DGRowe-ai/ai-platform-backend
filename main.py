@@ -12,6 +12,8 @@ from pydantic import BaseModel
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 from openai import OpenAI
 import json
@@ -39,24 +41,27 @@ load_dotenv()
 app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 
 # -------------------------------------------------
-# ADD CORS MIDDLEWARE FIRST - BEFORE ANYTHING ELSE
-# This MUST be before any other middleware or routes
+# CORS
 # -------------------------------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://ai-platform-frontend-uaaa.onrender.com",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-    ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=600,
-)
+DEFAULT_CORS_ORIGINS = [
+    "https://ai-platform-frontend-uaaa.onrender.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+]
+
+
+def get_cors_origins():
+    configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [
+        origin.strip().rstrip("/")
+        for origin in configured_origins.split(",")
+        if origin.strip()
+    ]
+    return origins or DEFAULT_CORS_ORIGINS
 
 # -------------------------------------------------
 # Database + models
@@ -159,6 +164,63 @@ class UpdateBusinessRequest(BaseModel):
     instructions: str
     knowledge: str
 
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def get_user_by_email(db: Session, email: str):
+    normalized_email = normalize_email(email)
+    try:
+        return db.query(User).filter(func.lower(User.email) == normalized_email).first()
+    except SQLAlchemyError:
+        logger.exception("Database error while looking up user during login")
+        raise HTTPException(status_code=500, detail="Unable to complete login")
+
+
+def serialize_business_summary(business):
+    try:
+        business_id = business.id
+        name = business.name
+        folder_name = business.folder_name
+    except Exception:
+        logger.exception("Unable to serialize business row")
+        return None
+
+    if business_id is None:
+        logger.warning("Skipping business row with missing id")
+        return None
+
+    return {
+        "id": business_id,
+        "name": name or folder_name or "Untitled business",
+        "folder_name": folder_name,
+    }
+
+
+def get_business_summaries_for_user(
+    db: Session,
+    user_id: int,
+    *,
+    fail_on_error: bool = True,
+):
+    try:
+        businesses = db.query(Business).filter(Business.owner_id == user_id).all()
+    except SQLAlchemyError:
+        logger.exception("Database error while loading businesses for user_id=%s", user_id)
+        if fail_on_error:
+            raise HTTPException(status_code=500, detail="Unable to load businesses")
+        return []
+
+    summaries = []
+    for business in businesses:
+        summary = serialize_business_summary(business)
+        if summary is not None:
+            summaries.append(summary)
+
+    return summaries
+
+
 # -------------------------------------------------
 # Guards
 # -------------------------------------------------
@@ -232,26 +294,40 @@ async def global_exception_handler(request: Request, exc: Exception):
 # -------------------------------------------------
 @app.post("/login")
 def login(req: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
+    user = get_user_by_email(db, req.email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if not verify_password(req.password, user.password_hash):
+    password_is_valid = False
+    try:
+        password_is_valid = verify_password(req.password, user.password_hash)
+    except Exception:
+        logger.exception("Password verification failed for user_id=%s", user.id)
+
+    if not password_is_valid:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    user_id = user.id
+    role = user.role
+    subscription_active = user.subscription_active
+    business_id = user.business_id
+    businesses = get_business_summaries_for_user(db, user_id, fail_on_error=False)
+
     token = create_access_token({
-        "user_id": user.id,
-        "role": user.role,
-        "subscription_active": user.subscription_active,
-        "business_id": user.business_id
+        "user_id": user_id,
+        "role": role,
+        "subscription_active": subscription_active,
+        "business_id": business_id
     })
 
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user_id": user.id,
-        "subscription_active": user.subscription_active,
-        "role": user.role
+        "user_id": user_id,
+        "subscription_active": subscription_active,
+        "role": role,
+        "business_id": business_id,
+        "businesses": businesses,
     }
 
 # -------------------------------------------------
@@ -450,11 +526,7 @@ def my_businesses(
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    businesses = db.query(Business).filter(Business.owner_id == user.id).all()
-    return [
-        {"id": b.id, "name": b.name, "folder_name": b.folder_name}
-        for b in businesses
-    ]
+    return get_business_summaries_for_user(db, user.id)
 
 @app.get("/business/{business_id}")
 def get_business(
@@ -939,3 +1011,16 @@ async def stripe_webhook(
             )
 
     return {"status": "success"}
+
+
+# Keep CORS as the outermost ASGI layer so even unexpected 500 responses include
+# CORS headers and browsers show the real JSON error instead of masking it.
+app = CORSMiddleware(
+    app=app,
+    allow_origins=get_cors_origins(),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
+)

@@ -3,6 +3,7 @@ from jose import jwt, JWTError
 from datetime import datetime, timedelta
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.exc import SQLAlchemyError
 from database import SessionLocal
 from models import User
 import os
@@ -27,7 +28,11 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plaintext password against its hash"""
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception:
+        logger.exception("Password hash verification failed")
+        return False
 
 
 def create_access_token(data: dict) -> str:
@@ -58,11 +63,16 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 
         return user
 
+    except HTTPException:
+        raise
     except JWTError as e:
-        logger.error(f"JWT decode error: {str(e)}")
+        logger.error("JWT decode error: %s", str(e))
         raise HTTPException(status_code=401, detail="Invalid token")
+    except SQLAlchemyError:
+        logger.exception("Database error while loading current user")
+        raise HTTPException(status_code=500, detail="Unable to authenticate user")
     except Exception as e:
-        logger.error(f"Error in get_current_user: {str(e)}")
+        logger.exception("Error in get_current_user: %s", str(e))
         raise HTTPException(status_code=401, detail="Authentication failed")
     finally:
         # Always close the database connection
