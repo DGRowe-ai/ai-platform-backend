@@ -50,18 +50,6 @@ app = FastAPI()
 # Create database tables
 Base.metadata.create_all(bind=engine)
 
-# -----------------------------
-# CORS
-# -----------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=get_cors_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error during %s %s", request.method, request.url.path)
@@ -282,3 +270,14 @@ def update_business(payload: dict, user = Depends(get_current_user), db: Session
     (base / "knowledge.txt").write_text(payload["knowledge"])
 
     return {"message": "Business updated"}
+
+
+# Keep CORS as the outermost ASGI layer so even 500 responses include CORS
+# headers and browsers show the real JSON error instead of masking it.
+app = CORSMiddleware(
+    app=app,
+    allow_origins=get_cors_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
