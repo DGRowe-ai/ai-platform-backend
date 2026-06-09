@@ -39,7 +39,8 @@ load_dotenv()
 app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 
 # -------------------------------------------------
-# ADD CORS MIDDLEWARE IMMEDIATELY - BEFORE ANY OTHER MIDDLEWARE
+# ADD CORS MIDDLEWARE FIRST - BEFORE ANYTHING ELSE
+# This MUST be before any other middleware or routes
 # -------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -51,13 +52,14 @@ app.add_middleware(
         "http://127.0.0.1:5500",
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
     allow_headers=["*"],
     expose_headers=["*"],
+    max_age=600,
 )
 
 # -------------------------------------------------
-# Database + models (AFTER CORS)
+# Database + models
 # -------------------------------------------------
 from database import Base, engine, SessionLocal
 from models import User, Business, MessageLog, Conversation
