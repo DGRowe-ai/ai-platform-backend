@@ -1,7 +1,9 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pathlib import Path
 import json
+import logging
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -20,6 +22,7 @@ from business_utils import create_business_for_user
 
 # Load environment variables
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 DEFAULT_CORS_ORIGINS = [
     "https://ai-platform-frontend-uaaa.onrender.com",
@@ -57,6 +60,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error during %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 openai_client = None
 
@@ -233,7 +245,14 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
 
-    if not user or not verify_password(req.password, user.password_hash):
+    password_is_valid = False
+    if user:
+        try:
+            password_is_valid = verify_password(req.password, user.password_hash)
+        except Exception:
+            logger.exception("Password verification failed for user_id=%s", user.id)
+
+    if not user or not password_is_valid:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_access_token({"user_id": user.id})
