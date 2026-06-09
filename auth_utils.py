@@ -1,81 +1,70 @@
-from datetime import datetime, timedelta
-
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
 from passlib.context import CryptContext
-
+from jose import jwt, JWTError
+from datetime import datetime, timedelta
+from fastapi import Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
 from database import SessionLocal
 from models import User
+import os
+import logging
 
+logger = logging.getLogger(__name__)
 
-# ============================
-# PASSWORD HASHING
-# ============================
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-
-# ============================
-# JWT CONFIG
-# ============================
-SECRET_KEY = "18002672001201108"
+# Get SECRET_KEY from environment, with a fallback for development
+SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE_THIS_TO_A_LONG_RANDOM_STRING_IN_PRODUCTION")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
 
 def hash_password(password: str) -> str:
+    """Hash a plaintext password using bcrypt"""
     return pwd_context.hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plaintext password against its hash"""
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def create_access_token(data: dict) -> str:
+    """Create a JWT access token"""
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-# ============================
-# AUTHENTICATION
-# ============================
-security = HTTPBearer()
-
-
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials
-
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    """Dependency to get the current authenticated user"""
+    db = None
     try:
+        # Decode the token
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: int = payload.get("user_id")
 
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
 
+        # Get user from database
         db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == user_id).first()
-        finally:
-            db.close()
+        user = db.query(User).filter(User.id == user_id).first()
 
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
 
         return user
 
-    except JWTError:
+    except JWTError as e:
+        logger.error(f"JWT decode error: {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token")
-
-
-# ============================
-# ROLE GUARD
-# ============================
-def require_role(user: User, allowed_roles: list[str]):
-    """
-    Ensure the current user has one of the allowed roles.
-    Raises HTTPException(403) if not authorized.
-    """
-    if user.role not in allowed_roles:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    except Exception as e:
+        logger.error(f"Error in get_current_user: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+    finally:
+        # Always close the database connection
+        if db:
+            db.close()

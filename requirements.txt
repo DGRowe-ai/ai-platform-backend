@@ -3,7 +3,7 @@ uvicorn
 python-dotenv
 openai
 sqlalchemy
-passlib[argon2]
-argon2-cffi
-python-jose
+passlib[bcrypt]
+python-jose[cryptography]
+pydantic
 stripe

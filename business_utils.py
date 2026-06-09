@@ -1,41 +1,52 @@
-import os
 import shutil
 from pathlib import Path
+from sqlalchemy.orm import Session
 from models import Business
+import logging
 
-# Always resolve paths relative to THIS file (works on Render)
-BASE_DIR = Path(__file__).resolve().parent
+logger = logging.getLogger(__name__)
 
-# Businesses folder inside src (this is writable on Render)
-BUSINESSES_PATH = BASE_DIR / "businesses"
+TEMPLATE_PATH = Path("..") / "businesses" / "template"
+BUSINESSES_PATH = Path("..") / "businesses"
 
-# Template folder inside businesses
-TEMPLATE_PATH = BUSINESSES_PATH / "template"
-
-def create_business_for_user(db, user, business_name):
-    # Convert business name to folder-safe format
-    folder_name = business_name.lower().replace(" ", "_")
-    new_path = BUSINESSES_PATH / folder_name
-
-    # Ensure businesses directory exists
-    BUSINESSES_PATH.mkdir(parents=True, exist_ok=True)
-
-    # Prevent overwriting existing business
-    if new_path.exists():
-        raise Exception("Business folder already exists")
-
-    # Copy template folder into new business folder
-    shutil.copytree(TEMPLATE_PATH, new_path)
-
-    # Create DB entry
-    business = Business(
-        name=business_name,
-        folder_name=folder_name,
-        owner_id=user.id
-    )
-
-    db.add(business)
-    db.commit()
-    db.refresh(business)
-
-    return business
+def create_business_for_user(db: Session, user, business_name: str):
+    """Create a new business folder for a user by copying the template"""
+    try:
+        # Validate inputs
+        if not user or not business_name:
+            raise ValueError("User and business_name are required")
+        
+        # Create folder name from business name
+        folder_name = business_name.lower().replace(" ", "_").replace("-", "_")
+        new_path = BUSINESSES_PATH / folder_name
+        
+        # Check if business already exists
+        if new_path.exists():
+            raise Exception(f"Business folder already exists: {folder_name}")
+        
+        # Check if template exists
+        if not TEMPLATE_PATH.exists():
+            raise Exception(f"Template folder not found: {TEMPLATE_PATH}")
+        
+        # Copy template to new business folder
+        logger.info(f"Creating business folder: {folder_name}")
+        shutil.copytree(TEMPLATE_PATH, new_path)
+        
+        # Create database record
+        business = Business(
+            name=business_name,
+            folder_name=folder_name,
+            owner_id=user.id
+        )
+        
+        db.add(business)
+        db.commit()
+        db.refresh(business)
+        
+        logger.info(f"Business created successfully: {folder_name} (ID: {business.id})")
+        return business
+    
+    except Exception as e:
+        logger.error(f"Error creating business for user {user.id}: {str(e)}")
+        db.rollback()
+        raise
