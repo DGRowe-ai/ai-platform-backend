@@ -20,7 +20,6 @@ import io
 import zipfile
 import stripe
 import logging
-import logging
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,27 +38,26 @@ load_dotenv()
 # -------------------------------------------------
 app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 
-from fastapi.middleware.cors import CORSMiddleware
-
+# -------------------------------------------------
+# CORS - FIXED for proper cross-origin support
+# -------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://ai-platform-frontend-uaaa.onrender.com",
         "http://localhost:3000",
-        "http://127.0.0.1:3000"
+        "http://127.0.0.1:3000",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -------------------------------------------------
-# CORS
-# -------------------------------------------------
-
-
-@app.options("/login")
-def options_login():
+# Handle preflight requests
+@app.options("/{full_path:path}")
+async def preflight_handler(full_path: str):
     return Response(status_code=200)
 
 # -------------------------------------------------
@@ -440,10 +438,6 @@ def load_business_data(business_id: str):
 # -------------------------------------------------
 # Basic routes
 # -------------------------------------------------
-@app.options("/my_businesses")
-def options_my_businesses():
-    return Response(status_code=200)
-
 @app.get("/ping")
 def ping():
     return {"message": "pong"}
@@ -529,17 +523,6 @@ def business_chat(
     )
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-
-    # -----------------------------
-    # RATE LIMITING (Step 6.2)
-    # -----------------------------
-    ip = request.client.host
-
-    if not check_rate_limit(db, business.id, ip):
-        raise HTTPException(status_code=429, detail="Too many requests. Slow down.")
-
-    record_rate_limit(db, business.id, ip)
-    # -----------------------------
 
     # Monthly usage limits (existing)
     tier = "starter"
@@ -669,7 +652,7 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     Need Help?
     ----------------------------------------
     If you need help installing the chatbot or customizing responses,
-    just reply to this email and we’ll take care of you.
+    just reply to this email and we'll take care of you.
 
     Thanks for choosing Rowe AI!
     """
@@ -748,24 +731,8 @@ def team(
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-@app.post("/some/route")
-def some_route(req: PublicChatRequest, db: Session = Depends(get_db)):
-    # -----------------------------
-    # INPUT VALIDATION (Step 6.3)
-    # -----------------------------
-    if not req.message or len(req.message.strip()) == 0:
-        raise HTTPException(status_code=400, detail="Message cannot be empty.")
-
-    if len(req.message) > 2000:
-        raise HTTPException(status_code=400, detail="Message too long (max 2000 characters).")
-    # -----------------------------
-
     users = db.query(User).filter(User.business_id == business.id).all()
-
     return [{"id": u.id, "email": u.email, "role": u.role} for u in users]
-
-
-
 
 # -------------------------------------------------
 # Export routes
