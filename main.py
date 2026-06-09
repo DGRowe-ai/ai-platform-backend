@@ -1,11 +1,15 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pathlib import Path
 import json
+import logging
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
+from sqlalchemy.exc import SQLAlchemyError
 
 # Database + models
 from database import Base, engine, SessionLocal
@@ -20,7 +24,27 @@ from business_utils import create_business_for_user
 
 # Load environment variables
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+logger = logging.getLogger(__name__)
+
+DEFAULT_CORS_ORIGINS = [
+    "https://ai-platform-frontend-uaaa.onrender.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+]
+
+
+def get_cors_origins():
+    configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [
+        origin.strip().rstrip("/")
+        for origin in configured_origins.split(",")
+        if origin.strip()
+    ]
+    return origins or DEFAULT_CORS_ORIGINS
 
 # FastAPI app
 app = FastAPI()
@@ -28,18 +52,31 @@ app = FastAPI()
 # Create database tables
 Base.metadata.create_all(bind=engine)
 
-# -----------------------------
-# CORS
-# -----------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error during %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai_client = None
+
+
+def get_openai_client():
+    global openai_client
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY is not configured for chat responses",
+        )
+
+    if openai_client is None:
+        openai_client = OpenAI(api_key=api_key)
+
+    return openai_client
 
 # -----------------------------
 # Database session dependency
@@ -87,6 +124,57 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def get_user_by_email(db: Session, email: str):
+    normalized_email = normalize_email(email)
+    try:
+        return db.query(User).filter(func.lower(User.email) == normalized_email).first()
+    except SQLAlchemyError:
+        logger.exception("Database error while looking up user during login")
+        raise HTTPException(status_code=500, detail="Unable to complete login")
+
+
+def serialize_business_summary(business):
+    try:
+        business_id = business.id
+        name = business.name
+        folder_name = business.folder_name
+    except Exception:
+        logger.exception("Unable to serialize business row")
+        return None
+
+    if business_id is None:
+        logger.warning("Skipping business row with missing id")
+        return None
+
+    return {
+        "id": business_id,
+        "name": name or folder_name or "Untitled business",
+        "folder_name": folder_name,
+    }
+
+
+def get_business_summaries_for_user(db: Session, user_id: int, *, fail_on_error: bool = True):
+    try:
+        businesses = db.query(Business).filter(Business.owner_id == user_id).all()
+    except SQLAlchemyError:
+        logger.exception("Database error while loading businesses for user_id=%s", user_id)
+        if fail_on_error:
+            raise HTTPException(status_code=500, detail="Unable to load businesses")
+        return []
+
+    summaries = []
+    for business in businesses:
+        summary = serialize_business_summary(business)
+        if summary is not None:
+            summaries.append(summary)
+
+    return summaries
+
 # -----------------------------
 # AI Response Generator
 # -----------------------------
@@ -107,7 +195,7 @@ User message:
 Respond clearly, accurately, and only using the business information above.
 """
 
-    response = client.chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a helpful AI assistant."},
@@ -128,20 +216,16 @@ def ping():
 # Step 11A - Get logged-in user's businesses
 @app.get("/my_businesses")
 def my_businesses(user = Depends(get_current_user), db: Session = Depends(get_db)):
-    businesses = db.query(Business).filter(Business.owner_id == user.id).all()
-    return [
-        {
-            "id": b.id,
-            "name": b.name,
-            "folder_name": b.folder_name
-        }
-        for b in businesses
-    ]
+    return get_business_summaries_for_user(db, user.id)
 
 # Step 11B - Protected business loader
 @app.get("/business/{business_id}")
 def get_business(business_id: str, user = Depends(get_current_user), db: Session = Depends(get_db)):
-    business = db.query(Business).filter(Business.folder_name == business_id).first()
+    try:
+        business = db.query(Business).filter(Business.folder_name == business_id).first()
+    except SQLAlchemyError:
+        logger.exception("Database error while loading business_id=%s", business_id)
+        raise HTTPException(status_code=500, detail="Unable to load business")
 
     if not business or business.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -155,9 +239,18 @@ def get_business(business_id: str, user = Depends(get_current_user), db: Session
 
 @app.post("/create-business")
 def create_business_route(req: CreateBusinessRequest, db: Session = Depends(get_db)):
+    try:
+        owner = db.query(User).filter(User.id == req.owner_id).first()
+    except SQLAlchemyError:
+        logger.exception("Database error while loading owner_id=%s", req.owner_id)
+        raise HTTPException(status_code=500, detail="Unable to create business")
+
+    if not owner:
+        raise HTTPException(status_code=404, detail="Owner not found")
+
     new_business = create_business_for_user(
         db=db,
-        user=db.query(User).filter(User.id == req.owner_id).first(),
+        user=owner,
         business_name=req.business_name
     )
     return {
@@ -176,12 +269,19 @@ def chat(req: ChatRequest):
 # -----------------------------
 @app.post("/signup")
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == req.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    email = normalize_email(req.email)
+    try:
+        existing = db.query(User).filter(User.email == email).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        logger.exception("Database error while checking signup email")
+        raise HTTPException(status_code=500, detail="Unable to complete signup")
 
     user = User(
-        email=req.email,
+        email=email,
         password_hash=hash_password(req.password)
     )
 
@@ -196,17 +296,26 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
 
 @app.post("/login")
 def login(req: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
+    user = get_user_by_email(db, req.email)
 
-    if not user or not verify_password(req.password, user.password_hash):
+    password_is_valid = False
+    if user:
+        try:
+            password_is_valid = verify_password(req.password, user.password_hash)
+        except Exception:
+            logger.exception("Password verification failed for user_id=%s", user.id)
+
+    if not user or not password_is_valid:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_access_token({"user_id": user.id})
+    businesses = get_business_summaries_for_user(db, user.id, fail_on_error=False)
 
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user_id": user.id
+        "user_id": user.id,
+        "businesses": businesses,
     }
 
 # -----------------------------
@@ -214,9 +323,15 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 # -----------------------------
 @app.post("/update_business")
 def update_business(payload: dict, user = Depends(get_current_user), db: Session = Depends(get_db)):
-    business_id = payload["business_id"]
+    business_id = payload.get("business_id")
+    if not business_id:
+        raise HTTPException(status_code=400, detail="business_id is required")
 
-    business = db.query(Business).filter(Business.folder_name == business_id).first()
+    try:
+        business = db.query(Business).filter(Business.folder_name == business_id).first()
+    except SQLAlchemyError:
+        logger.exception("Database error while loading business_id=%s for update", business_id)
+        raise HTTPException(status_code=500, detail="Unable to update business")
 
     if not business or business.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -228,3 +343,14 @@ def update_business(payload: dict, user = Depends(get_current_user), db: Session
     (base / "knowledge.txt").write_text(payload["knowledge"])
 
     return {"message": "Business updated"}
+
+
+# Keep CORS as the outermost ASGI layer so even 500 responses include CORS
+# headers and browsers show the real JSON error instead of masking it.
+app = CORSMiddleware(
+    app=app,
+    allow_origins=get_cors_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
