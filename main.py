@@ -20,7 +20,26 @@ from business_utils import create_business_for_user
 
 # Load environment variables
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+DEFAULT_CORS_ORIGINS = [
+    "https://ai-platform-frontend-uaaa.onrender.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+]
+
+
+def get_cors_origins():
+    configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [
+        origin.strip().rstrip("/")
+        for origin in configured_origins.split(",")
+        if origin.strip()
+    ]
+    return origins or DEFAULT_CORS_ORIGINS
 
 # FastAPI app
 app = FastAPI()
@@ -33,13 +52,29 @@ Base.metadata.create_all(bind=engine)
 # -----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai_client = None
+
+
+def get_openai_client():
+    global openai_client
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY is not configured for chat responses",
+        )
+
+    if openai_client is None:
+        openai_client = OpenAI(api_key=api_key)
+
+    return openai_client
 
 # -----------------------------
 # Database session dependency
@@ -107,7 +142,7 @@ User message:
 Respond clearly, accurately, and only using the business information above.
 """
 
-    response = client.chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a helpful AI assistant."},
