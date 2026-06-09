@@ -4,4 +4,5 @@ python-dotenv
 openai
 sqlalchemy
 passlib[bcrypt]
+bcrypt<5
 python-jose
