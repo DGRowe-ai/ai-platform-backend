@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, false
 from sqlalchemy.orm import relationship
 from database import Base  # FIXED: removed the dot
 
@@ -8,6 +8,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     password_hash = Column(String)
+    is_admin = Column(Boolean, nullable=False, default=False, server_default=false())
     businesses = relationship("Business", back_populates="owner")
 
 class Business(Base):
