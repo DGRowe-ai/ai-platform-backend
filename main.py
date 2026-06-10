@@ -10,9 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -93,7 +93,7 @@ from business_utils import TEMPLATE_PATH, create_business_for_user
 from audit_utils import log_event
 from email_utils import send_email
 from admin_analytics import get_admin_analytics
-from business_settings_utils import get_settings
+from business_settings_utils import get_settings, update_settings
 
 # -------------------------------------------------
 # Stripe setup
@@ -121,6 +121,33 @@ def get_db():
 # Chat history utilities
 # -------------------------------------------------
 from chat_history_utils import save_message, get_history
+
+
+def ensure_business_settings_schema():
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(business_settings)"))
+        }
+
+        if "max_response_length" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE business_settings "
+                    "ADD COLUMN max_response_length INTEGER DEFAULT 300"
+                )
+            )
+
+        if "faq_items" not in columns:
+            connection.execute(
+                text("ALTER TABLE business_settings ADD COLUMN faq_items TEXT DEFAULT ''")
+            )
+
+
+ensure_business_settings_schema()
 
 # -------------------------------------------------
 # Request models
@@ -370,12 +397,20 @@ def _execute_chat(
     conversation_id: int | None = None,
 ):
     settings = get_settings(business_id)
+    faq_items = settings.get("faqs", [])
+    faq_text = "\n".join(
+        f"Q: {item.get('question', '')}\nA: {item.get('answer', '')}"
+        for item in faq_items
+        if isinstance(item, dict)
+    )
 
     system_prompt = f"""
     You are a chatbot for this business.
-    Tone: {settings.chatbot_tone}
-    Greeting: {settings.greeting_message}
-    Custom instructions: {settings.custom_instructions}
+    Tone: {settings.get('tone', 'friendly')}
+    Welcome message: {settings.get('welcome_message', 'Hello! How can I help you today?')}
+    Custom instructions: {settings.get('custom_instructions', '')}
+    Frequently asked questions:
+    {faq_text or 'No FAQs configured.'}
     """
 
     save_message(business_id, conversation_id, "user", message)
@@ -389,6 +424,7 @@ def _execute_chat(
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=conversation,
+        max_tokens=settings.get("max_response_length", 300),
         timeout=15,
     )
 
@@ -536,6 +572,179 @@ def my_businesses(
         raise HTTPException(status_code=403, detail="Not authorized")
 
     return get_business_summaries_for_user(db, user.id)
+
+
+def get_client_business(db: Session, user: User):
+    business = None
+
+    if user.business_id:
+        business = db.query(Business).filter(Business.id == user.business_id).first()
+
+    if not business and user.role == "owner":
+        business = db.query(Business).filter(Business.owner_id == user.id).first()
+
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found for this account")
+
+    if user.role == "owner" and business.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    return business
+
+
+def serialize_message_log(log: MessageLog):
+    return {
+        "id": log.id,
+        "conversation_id": log.conversation_id,
+        "timestamp": log.timestamp,
+        "user_message": log.user_message,
+        "bot_response": log.bot_response,
+    }
+
+
+@app.get("/client/dashboard")
+def client_dashboard(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    since = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+
+    total_conversations = (
+        db.query(Conversation)
+        .filter(Conversation.business_id == business.id)
+        .count()
+    )
+    total_messages = (
+        db.query(MessageLog)
+        .filter(MessageLog.business_id == business.id)
+        .count()
+    )
+    messages_last_24h = (
+        db.query(MessageLog)
+        .filter(
+            MessageLog.business_id == business.id,
+            MessageLog.timestamp >= since,
+        )
+        .count()
+    )
+    latest_message_at = (
+        db.query(func.max(MessageLog.timestamp))
+        .filter(MessageLog.business_id == business.id)
+        .scalar()
+    )
+
+    return {
+        "business": {
+            "id": business.id,
+            "name": business.name,
+            "folder_name": business.folder_name,
+        },
+        "analytics": {
+            "total_conversations": total_conversations,
+            "total_messages": total_messages,
+            "messages_last_24h": messages_last_24h,
+            "latest_message_at": latest_message_at,
+        },
+    }
+
+
+@app.get("/client/chat_history")
+def client_chat_history(
+    limit: int = 50,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    safe_limit = min(max(limit, 1), 200)
+    logs = (
+        db.query(MessageLog)
+        .filter(MessageLog.business_id == business.id)
+        .order_by(MessageLog.timestamp.desc())
+        .limit(safe_limit)
+        .all()
+    )
+    return {
+        "business_id": business.id,
+        "messages": [serialize_message_log(log) for log in logs],
+    }
+
+
+@app.delete("/client/chat_history/{message_id}")
+def delete_client_message(
+    message_id: int,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    log = (
+        db.query(MessageLog)
+        .filter(
+            MessageLog.id == message_id,
+            MessageLog.business_id == business.id,
+        )
+        .first()
+    )
+
+    if not log:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    db.delete(log)
+    db.commit()
+    return {"status": "deleted", "message_id": message_id}
+
+
+@app.delete("/client/conversations/{conversation_id}")
+def delete_client_conversation(
+    conversation_id: int,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    conversation = (
+        db.query(Conversation)
+        .filter(
+            Conversation.id == conversation_id,
+            Conversation.business_id == business.id,
+        )
+        .first()
+    )
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    db.query(MessageLog).filter(
+        MessageLog.conversation_id == conversation_id,
+        MessageLog.business_id == business.id,
+    ).delete(synchronize_session=False)
+    db.delete(conversation)
+    db.commit()
+    return {"status": "deleted", "conversation_id": conversation_id}
+
+
+@app.get("/client/chatbot_settings")
+def get_client_chatbot_settings(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    return get_settings(business.id)
+
+
+@app.post("/client/chatbot_settings")
+def save_client_chatbot_settings(
+    data: dict,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    return update_settings(business.id, data)
 
 @app.get("/business/{business_id}")
 def get_business(
