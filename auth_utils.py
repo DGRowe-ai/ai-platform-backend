@@ -21,6 +21,53 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def parse_admin_emails():
+    """Return the normalized ADMIN_EMAILS allowlist."""
+    configured_emails = os.getenv("ADMIN_EMAILS", "")
+    return {
+        normalize_email(email)
+        for email in configured_emails.split(",")
+        if email.strip()
+    }
+
+
+def is_admin_email(email: str) -> bool:
+    return normalize_email(email) in parse_admin_emails()
+
+
+def user_has_role(user: User, allowed_roles: list) -> bool:
+    normalized_allowed_roles = {
+        role.strip().lower()
+        for role in allowed_roles
+        if role and role.strip()
+    }
+    user_role = (user.role or "").strip().lower()
+
+    if user_role in normalized_allowed_roles:
+        return True
+
+    return "admin" in normalized_allowed_roles and is_admin_email(user.email)
+
+
+def sync_admin_role_from_allowlist(db, user: User) -> User:
+    """Promote allowlisted users into the existing role-based admin system."""
+    if is_admin_email(user.email) and (user.role or "").strip().lower() != "admin":
+        try:
+            user.role = "admin"
+            db.commit()
+            db.refresh(user)
+        except SQLAlchemyError:
+            db.rollback()
+            logger.exception("Database error while promoting allowlisted admin user")
+            raise HTTPException(status_code=500, detail="Unable to complete login")
+
+    return user
+
+
 def hash_password(password: str) -> str:
     """Hash a plaintext password using bcrypt"""
     try:
@@ -89,5 +136,5 @@ def require_role(user: User, allowed_roles: list):
     Ensure the current user has one of the allowed roles.
     Raises HTTPException(403) if not authorized.
     """
-    if user.role not in allowed_roles:
+    if not user_has_role(user, allowed_roles):
         raise HTTPException(status_code=403, detail="Not authorized")
