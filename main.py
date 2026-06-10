@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "signup-template-fix-2026-06-10-2"
+DEPLOYMENT_VERSION = "admin-auth-allowlist-2026-06-10-1"
 
 # -------------------------------------------------
 # Load environment
