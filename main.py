@@ -670,29 +670,57 @@ def get_current_admin(
 
 @app.post("/signup")
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == req.email).first()
-    if existing:
+    email = normalize_email(req.email)
+    try:
+        existing = db.query(User).filter(func.lower(User.email) == email).first()
+    except SQLAlchemyError:
+        logger.exception("Database error while checking signup email")
+        raise HTTPException(status_code=500, detail="Unable to complete signup")
+
+    if existing and existing.business_id:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    user = User(
-        email=req.email,
-        password_hash=hash_password(req.password),
-        subscription_active=0,
-        role="owner",
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    user = existing
+    if user:
+        logger.warning("Completing interrupted signup for user_id=%s", user.id)
+        user.password_hash = hash_password(req.password)
+        user.role = user.role or "owner"
+        if user.subscription_active is None:
+            user.subscription_active = 0
+    else:
+        user = User(
+            email=email,
+            password_hash=hash_password(req.password),
+            subscription_active=0,
+            role="owner",
+        )
+        db.add(user)
 
-    log_event(
-        user_id=user.id,
-        event_type="signup",
-        description="New user registered",
-    )
+    try:
+        db.flush()
+        new_business = create_business_for_user(db, user, req.business_name)
+        user.business_id = new_business.id
+        db.commit()
+        db.refresh(user)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception("Signup failed while creating business for email=%s", email)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create business for this account",
+        )
 
-    new_business = create_business_for_user(db, user, req.business_name)
-    user.business_id = new_business.id
-    db.commit()
+    try:
+        log_event(
+            user_id=user.id,
+            event_type="signup",
+            description="New user registered",
+        )
+    except Exception:
+        logger.exception("Failed to write signup audit log for user_id=%s", user.id)
 
     frontend_base = "https://ai-platform-frontend-uaaa.onrender.com"
     chatbot_link = f"{frontend_base}/chat.html?b={user.business_id}"
@@ -727,11 +755,14 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     Thanks for choosing Rowe AI!
     """
 
-    send_email(
-        to_email=user.email,
-        subject=f"Your Rowe AI Chatbot Is Ready, {req.business_name}!",
-        body=email_body,
-    )
+    try:
+        send_email(
+            to_email=user.email,
+            subject=f"Your Rowe AI Chatbot Is Ready, {req.business_name}!",
+            body=email_body,
+        )
+    except Exception:
+        logger.exception("Failed to send signup email for user_id=%s", user.id)
 
     return {
         "message": "Signup successful",

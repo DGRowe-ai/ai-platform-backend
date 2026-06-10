@@ -6,8 +6,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-TEMPLATE_PATH = Path("..") / "businesses" / "template"
-BUSINESSES_PATH = Path("..") / "businesses"
+BUSINESSES_PATH = Path(__file__).resolve().parent / "businesses"
+TEMPLATE_PATH = BUSINESSES_PATH / "template"
 
 def create_business_for_user(db: Session, user, business_name: str):
     """Create a new business folder for a user by copying the template"""
@@ -47,6 +47,10 @@ def create_business_for_user(db: Session, user, business_name: str):
         return business
     
     except Exception as e:
-        logger.error(f"Error creating business for user {user.id}: {str(e)}")
+        logger.error(
+            "Error creating business for user %s: %s",
+            getattr(user, "id", None),
+            str(e),
+        )
         db.rollback()
         raise
