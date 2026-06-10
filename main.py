@@ -29,6 +29,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+DEPLOYMENT_VERSION = "signup-template-fix-2026-06-10-2"
 
 # -------------------------------------------------
 # Load environment
@@ -84,7 +85,7 @@ from auth_utils import (
 # -------------------------------------------------
 # Business creation engine
 # -------------------------------------------------
-from business_utils import create_business_for_user
+from business_utils import TEMPLATE_PATH, create_business_for_user
 
 # -------------------------------------------------
 # Audit + email + analytics utilities
@@ -515,6 +516,14 @@ def load_business_data(business_id: str):
 @app.get("/ping")
 def ping():
     return {"message": "pong"}
+
+
+@app.get("/deployment_version")
+def deployment_version():
+    return {
+        "version": DEPLOYMENT_VERSION,
+        "template_path": str(TEMPLATE_PATH),
+    }
 
 @app.get("/my_businesses")
 def my_businesses(

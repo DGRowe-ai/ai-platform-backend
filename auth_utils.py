@@ -23,7 +23,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 def hash_password(password: str) -> str:
     """Hash a plaintext password using bcrypt"""
-    return pwd_context.hash(password)
+    try:
+        return pwd_context.hash(password)
+    except Exception:
+        logger.exception("Password hashing failed")
+        raise HTTPException(status_code=500, detail="Unable to secure password")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
