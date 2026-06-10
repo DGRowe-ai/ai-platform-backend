@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func
+from sqlalchemy import func, inspect
 from sqlalchemy.exc import SQLAlchemyError
 
 # Database + models
@@ -17,7 +17,15 @@ from sqlalchemy.orm import Session
 from models import User, Business
 
 # Auth utilities
-from auth_utils import hash_password, verify_password, create_access_token, get_current_user
+from auth_utils import (
+    create_access_token,
+    get_current_admin_user,
+    get_current_user,
+    hash_password,
+    parse_admin_emails,
+    user_has_admin_access,
+    verify_password,
+)
 
 # Business creation engine (Step 12)
 from business_utils import create_business_for_user
@@ -49,8 +57,50 @@ def get_cors_origins():
 # FastAPI app
 app = FastAPI()
 
+
+def ensure_user_admin_column():
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+
+    user_columns = {column["name"] for column in inspector.get_columns("users")}
+    if "is_admin" in user_columns:
+        return
+
+    default_value = "0" if engine.dialect.name == "sqlite" else "FALSE"
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            f"ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT {default_value}"
+        )
+
+
+def apply_admin_email_allowlist():
+    admin_emails = parse_admin_emails()
+    if not admin_emails:
+        return
+
+    db = SessionLocal()
+    try:
+        users = db.query(User).filter(func.lower(User.email).in_(admin_emails)).all()
+        updated = False
+        for user in users:
+            if not user.is_admin:
+                user.is_admin = True
+                updated = True
+
+        if updated:
+            db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error while applying ADMIN_EMAILS allowlist")
+    finally:
+        db.close()
+
+
 # Create database tables
 Base.metadata.create_all(bind=engine)
+ensure_user_admin_column()
+apply_admin_email_allowlist()
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
@@ -138,6 +188,24 @@ def get_user_by_email(db: Session, email: str):
         raise HTTPException(status_code=500, detail="Unable to complete login")
 
 
+def is_admin_email(email: str) -> bool:
+    return normalize_email(email) in parse_admin_emails()
+
+
+def sync_allowlisted_admin(db: Session, user: User) -> bool:
+    if is_admin_email(user.email) and not user.is_admin:
+        try:
+            user.is_admin = True
+            db.commit()
+            db.refresh(user)
+        except SQLAlchemyError:
+            db.rollback()
+            logger.exception("Database error while promoting allowlisted admin user")
+            raise HTTPException(status_code=500, detail="Unable to complete login")
+
+    return user_has_admin_access(user)
+
+
 def serialize_business_summary(business):
     try:
         business_id = business.id
@@ -174,6 +242,20 @@ def get_business_summaries_for_user(db: Session, user_id: int, *, fail_on_error:
             summaries.append(summary)
 
     return summaries
+
+
+def serialize_admin_business_summary(business, owner_email):
+    summary = serialize_business_summary(business)
+    if summary is None:
+        return None
+
+    summary.update(
+        {
+            "owner_id": business.owner_id,
+            "owner_email": owner_email,
+        }
+    )
+    return summary
 
 # -----------------------------
 # AI Response Generator
@@ -217,6 +299,41 @@ def ping():
 @app.get("/my_businesses")
 def my_businesses(user = Depends(get_current_user), db: Session = Depends(get_db)):
     return get_business_summaries_for_user(db, user.id)
+
+
+@app.get("/admin/businesses")
+def admin_businesses(admin_user = Depends(get_current_admin_user), db: Session = Depends(get_db)):
+    try:
+        rows = (
+            db.query(Business, User.email)
+            .outerjoin(User, Business.owner_id == User.id)
+            .all()
+        )
+    except SQLAlchemyError:
+        logger.exception("Database error while loading admin businesses")
+        raise HTTPException(status_code=500, detail="Unable to load businesses")
+
+    businesses = []
+    for business, owner_email in rows:
+        summary = serialize_admin_business_summary(business, owner_email)
+        if summary is not None:
+            businesses.append(summary)
+
+    return businesses
+
+
+@app.get("/admin/analytics")
+def admin_analytics(admin_user = Depends(get_current_admin_user), db: Session = Depends(get_db)):
+    try:
+        return {
+            "users": db.query(func.count(User.id)).scalar() or 0,
+            "businesses": db.query(func.count(Business.id)).scalar() or 0,
+            "admins": db.query(func.count(User.id)).filter(User.is_admin.is_(True)).scalar() or 0,
+        }
+    except SQLAlchemyError:
+        logger.exception("Database error while loading admin analytics")
+        raise HTTPException(status_code=500, detail="Unable to load analytics")
+
 
 # Step 11B - Protected business loader
 @app.get("/business/{business_id}")
@@ -282,7 +399,8 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
 
     user = User(
         email=email,
-        password_hash=hash_password(req.password)
+        password_hash=hash_password(req.password),
+        is_admin=is_admin_email(email),
     )
 
     db.add(user)
@@ -308,13 +426,15 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     if not user or not password_is_valid:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_access_token({"user_id": user.id})
+    is_admin = sync_allowlisted_admin(db, user)
+    token = create_access_token({"user_id": user.id, "is_admin": is_admin})
     businesses = get_business_summaries_for_user(db, user.id, fail_on_error=False)
 
     return {
         "access_token": token,
         "token_type": "bearer",
         "user_id": user.id,
+        "is_admin": is_admin,
         "businesses": businesses,
     }
 

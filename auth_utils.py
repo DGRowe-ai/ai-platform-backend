@@ -21,6 +21,25 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
+def parse_admin_emails() -> set[str]:
+    """Return the normalized ADMIN_EMAILS allowlist."""
+    configured_emails = os.getenv("ADMIN_EMAILS", "")
+    return {
+        email.strip().lower()
+        for email in configured_emails.split(",")
+        if email.strip()
+    }
+
+
+def user_has_admin_access(user: User) -> bool:
+    """Check DB admin flag and environment allowlist."""
+    if bool(getattr(user, "is_admin", False)):
+        return True
+
+    email = getattr(user, "email", "")
+    return email.strip().lower() in parse_admin_emails()
+
+
 def hash_password(password: str) -> str:
     """Hash a plaintext password using bcrypt"""
     return pwd_context.hash(password)
@@ -78,3 +97,11 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         # Always close the database connection
         if db:
             db.close()
+
+
+def get_current_admin_user(user: User = Depends(get_current_user)):
+    """Dependency to require an authenticated admin user."""
+    if not user_has_admin_access(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    return user
