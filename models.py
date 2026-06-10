@@ -121,7 +121,9 @@ class BusinessSettings(Base):
         String,
         default="friendly",  # friendly, professional, casual
     )
+    max_response_length = Column(Integer, default=300)
     custom_instructions = Column(Text, default="")
+    faq_items = Column(Text, default="")
 
 
 # ============================
