@@ -21,7 +21,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
-def parse_admin_emails() -> set[str]:
+def parse_admin_emails():
     """Return the normalized ADMIN_EMAILS allowlist."""
     configured_emails = os.getenv("ADMIN_EMAILS", "")
     return {
