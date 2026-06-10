@@ -79,7 +79,11 @@ from auth_utils import (
     verify_password,
     create_access_token,
     get_current_user,
+    is_admin_email,
+    parse_admin_emails,
     require_role,
+    sync_admin_role_from_allowlist,
+    user_has_role,
 )
 
 # -------------------------------------------------
@@ -123,6 +127,29 @@ def get_db():
 from chat_history_utils import save_message, get_history
 
 
+def apply_admin_email_allowlist():
+    admin_emails = parse_admin_emails()
+    if not admin_emails:
+        return
+
+    db = SessionLocal()
+    try:
+        users = db.query(User).filter(func.lower(User.email).in_(admin_emails)).all()
+        updated = False
+        for user in users:
+            if (user.role or "").strip().lower() != "admin":
+                user.role = "admin"
+                updated = True
+
+        if updated:
+            db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error while applying ADMIN_EMAILS allowlist")
+    finally:
+        db.close()
+
+
 def ensure_business_settings_schema():
     if engine.dialect.name != "sqlite":
         return
@@ -148,6 +175,7 @@ def ensure_business_settings_schema():
 
 
 ensure_business_settings_schema()
+apply_admin_email_allowlist()
 
 # -------------------------------------------------
 # Request models
@@ -335,6 +363,8 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     if not password_is_valid:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    user = sync_admin_role_from_allowlist(db, user)
+
     user_id = user.id
     role = user.role
     subscription_active = user.subscription_active
@@ -370,7 +400,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
     new_user = User(
         email=req.email,
         password_hash=hash_password(req.password),
-        role="owner",
+        role="admin" if is_admin_email(req.email) else "owner",
         subscription_active=True
     )
     db.add(new_user)
@@ -882,7 +912,7 @@ Knowledge Base:
 def get_current_admin(
     current_user: User = Depends(get_current_user)
 ):
-    if current_user.role != "admin":
+    if not user_has_role(current_user, ["admin"]):
         raise HTTPException(status_code=403, detail="Admins only")
     return current_user
 
@@ -903,6 +933,8 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
         logger.warning("Completing interrupted signup for user_id=%s", user.id)
         user.password_hash = hash_password(req.password)
         user.role = user.role or "owner"
+        if is_admin_email(email):
+            user.role = "admin"
         if user.subscription_active is None:
             user.subscription_active = 0
     else:
@@ -910,7 +942,7 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
             email=email,
             password_hash=hash_password(req.password),
             subscription_active=0,
-            role="owner",
+            role="admin" if is_admin_email(email) else "owner",
         )
         db.add(user)
 
