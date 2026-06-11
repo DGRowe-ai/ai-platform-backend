@@ -119,11 +119,11 @@ class BackendAdminAuthTests(unittest.TestCase):
         headers = self.auth_headers(login_response["access_token"])
         businesses_response = self.client.get("/admin/businesses", headers=headers)
         analytics_response = self.client.get("/admin/analytics", headers=headers)
-        my_businesses_response = self.client.get("/my_businesses", headers=headers)
+        client_dashboard_response = self.client.get("/client/dashboard", headers=headers)
 
         self.assertEqual(businesses_response.status_code, 403)
         self.assertEqual(analytics_response.status_code, 403)
-        self.assertEqual(my_businesses_response.status_code, 200)
+        self.assertEqual(client_dashboard_response.status_code, 200)
         self.assertEqual(
             my_businesses_response.json(),
             [
