@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "client-login-routing-2026-06-11-1"
+DEPLOYMENT_VERSION = "client-login-routing-2026-06-11-2"
 
 # -------------------------------------------------
 # Load environment
@@ -276,12 +276,18 @@ def require_role_guard(user: User, allowed_roles: list[str]):
 
 
 def get_login_role_for_client(user: User) -> str:
+    """Return a client-safe role for login responses.
+
+    Never emit ``admin`` here: the frontend regular login page treats that as a
+    platform-admin redirect signal. Platform admins are identified separately via
+    ``is_platform_admin`` and must use the dedicated admin login flow.
+    """
     role = (user.role or "owner").strip().lower()
-    if user_is_platform_admin(user):
-        return "admin"
+    if role == "admin" and not user_is_platform_admin(user):
+        return "business_admin"
 
     if role == "admin":
-        return "business_admin"
+        return "owner"
 
     return role
 
@@ -374,7 +380,6 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         "role": role,
         "business_role": business_role,
         "account_role": business_role,
-        "is_admin": is_platform_admin,
         "is_platform_admin": is_platform_admin,
         "subscription_active": subscription_active,
         "business_id": business_id
@@ -388,7 +393,6 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         "role": role,
         "business_role": business_role,
         "account_role": business_role,
-        "is_admin": is_platform_admin,
         "is_platform_admin": is_platform_admin,
         "business_id": business_id,
         "businesses": businesses,
