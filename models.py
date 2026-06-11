@@ -19,6 +19,9 @@ class User(Base):
     # Subscription status
     subscription_active = Column(Integer, default=0)
 
+    # Stripe billing
+    stripe_customer_id = Column(String, nullable=True, index=True)
+
     # Possible values: "admin", "owner", "user"
     role = Column(String, default="owner")
 

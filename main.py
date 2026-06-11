@@ -7,7 +7,7 @@ from fastapi import (
     Response,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "admin-delete-client-password-2026-06-11-1"
+DEPLOYMENT_VERSION = "stripe-checkout-onboarding-2026-06-11-1"
 
 # -------------------------------------------------
 # Load environment
@@ -98,6 +98,11 @@ from audit_utils import log_event
 from email_utils import send_email
 from admin_analytics import get_admin_analytics
 from business_settings_utils import get_settings, update_settings
+from stripe_checkout_utils import (
+    build_checkout_activation_url,
+    create_subscription_checkout_session,
+    resolve_checkout_user,
+)
 
 # -------------------------------------------------
 # Stripe setup
@@ -159,7 +164,23 @@ def ensure_business_settings_schema():
             )
 
 
+def ensure_user_stripe_schema():
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(users)"))
+        }
+
+        if "stripe_customer_id" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
+            )
+
+
 ensure_business_settings_schema()
+ensure_user_stripe_schema()
 apply_admin_email_allowlist()
 
 # -------------------------------------------------
@@ -1015,6 +1036,7 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
 
     frontend_base = "https://ai-platform-frontend-uaaa.onrender.com"
     chatbot_link = f"{frontend_base}/chat.html?b={user.business_id}"
+    checkout_link = build_checkout_activation_url(user.email)
     embed_code = f"""
     <!-- Rowe AI Chatbot -->
     <script src="{frontend_base}/widget-frame.js?b={user.business_id}"></script>
@@ -1036,6 +1058,12 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     Paste this code anywhere on your website's HTML to activate your chatbot:
 
     {embed_code}
+
+    ----------------------------------------
+    Activate Your Subscription
+    ----------------------------------------
+    To activate your subscription, complete your billing setup here:
+    {checkout_link}
 
     ----------------------------------------
     Need Help?
@@ -1253,6 +1281,20 @@ def export_filtered(
         )
 
     return csv_data
+
+# -------------------------------------------------
+# Stripe Checkout
+# -------------------------------------------------
+@app.get("/create-checkout-session")
+def create_checkout_session(
+    email: str | None = None,
+    business_id: str | None = None,
+    db: Session = Depends(get_db),
+):
+    user = resolve_checkout_user(db, email=email, business_id=business_id)
+    checkout_url = create_subscription_checkout_session(db, user)
+    return RedirectResponse(url=checkout_url, status_code=303)
+
 
 # -------------------------------------------------
 # Stripe Webhook
