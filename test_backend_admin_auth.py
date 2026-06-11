@@ -38,10 +38,17 @@ class BackendAdminAuthTests(unittest.TestCase):
             role="owner",
             subscription_active=1,
         )
-        self.db.add_all([self.admin_user, self.client_user])
+        self.business_admin_user = User(
+            email="business-admin@example.com",
+            password_hash=hash_password("password"),
+            role="admin",
+            subscription_active=1,
+        )
+        self.db.add_all([self.admin_user, self.client_user, self.business_admin_user])
         self.db.commit()
         self.db.refresh(self.admin_user)
         self.db.refresh(self.client_user)
+        self.db.refresh(self.business_admin_user)
 
         self.admin_business = Business(
             name="Admin Business",
@@ -53,11 +60,19 @@ class BackendAdminAuthTests(unittest.TestCase):
             folder_name="client_business",
             owner_id=self.client_user.id,
         )
-        self.db.add_all([self.admin_business, self.client_business])
+        self.business_admin_business = Business(
+            name="Business Admin Business",
+            folder_name="business_admin_business",
+            owner_id=self.business_admin_user.id,
+        )
+        self.db.add_all(
+            [self.admin_business, self.client_business, self.business_admin_business]
+        )
         self.db.commit()
         self.db.refresh(self.client_business)
 
         self.client_user.business_id = self.client_business.id
+        self.business_admin_user.business_id = self.business_admin_business.id
         self.db.add(AuditLog(user_id=self.admin_user.id, event_type="signup", description="test"))
         self.db.commit()
 
@@ -82,6 +97,9 @@ class BackendAdminAuthTests(unittest.TestCase):
         login_response = self.login("admin@example.com")
 
         self.assertEqual(login_response["role"], "admin")
+        self.assertEqual(login_response["business_role"], "owner")
+        self.assertTrue(login_response["is_admin"])
+        self.assertTrue(login_response["is_platform_admin"])
 
         headers = self.auth_headers(login_response["access_token"])
         businesses_response = self.client.get("/admin/businesses", headers=headers)
@@ -89,12 +107,14 @@ class BackendAdminAuthTests(unittest.TestCase):
 
         self.assertEqual(businesses_response.status_code, 200)
         self.assertEqual(analytics_response.status_code, 200)
-        self.assertEqual(len(businesses_response.json()), 2)
+        self.assertEqual(len(businesses_response.json()), 3)
 
     def test_non_admin_is_forbidden_but_my_businesses_still_works(self):
         login_response = self.login("client@example.com")
 
         self.assertEqual(login_response["role"], "owner")
+        self.assertFalse(login_response["is_admin"])
+        self.assertFalse(login_response["is_platform_admin"])
 
         headers = self.auth_headers(login_response["access_token"])
         businesses_response = self.client.get("/admin/businesses", headers=headers)
@@ -114,6 +134,23 @@ class BackendAdminAuthTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_business_admin_role_does_not_get_platform_admin_redirect_signal(self):
+        login_response = self.login("business-admin@example.com")
+
+        self.assertEqual(login_response["role"], "business_admin")
+        self.assertEqual(login_response["business_role"], "admin")
+        self.assertFalse(login_response["is_admin"])
+        self.assertFalse(login_response["is_platform_admin"])
+
+        headers = self.auth_headers(login_response["access_token"])
+        businesses_response = self.client.get("/admin/businesses", headers=headers)
+        analytics_response = self.client.get("/admin/analytics", headers=headers)
+        my_businesses_response = self.client.get("/my_businesses", headers=headers)
+
+        self.assertEqual(businesses_response.status_code, 403)
+        self.assertEqual(analytics_response.status_code, 403)
+        self.assertEqual(my_businesses_response.status_code, 200)
 
 
 if __name__ == "__main__":

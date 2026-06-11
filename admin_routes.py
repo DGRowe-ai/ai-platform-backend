@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from auth_utils import get_current_user, require_role
+from auth_utils import get_current_user, require_platform_admin
 from admin_analytics import get_admin_analytics
 from database import SessionLocal
 from models import Business, User
@@ -20,7 +20,7 @@ def get_db():
 # ============================
 @router.get("/admin/analytics")
 def admin_analytics(user=Depends(get_current_user)):
-    require_role(user, ["admin"])
+    require_platform_admin(user)
     return get_admin_analytics()
 
 @router.get("/admin/businesses")
@@ -28,7 +28,7 @@ def admin_get_all_businesses(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    require_role(user, ["admin"])
+    require_platform_admin(user)
 
     output = []
     rows = (

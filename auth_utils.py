@@ -39,6 +39,10 @@ def is_admin_email(email: str) -> bool:
     return normalize_email(email) in parse_admin_emails()
 
 
+def user_is_platform_admin(user: User) -> bool:
+    return is_admin_email(user.email)
+
+
 def user_has_role(user: User, allowed_roles: list) -> bool:
     normalized_allowed_roles = {
         role.strip().lower()
@@ -50,21 +54,11 @@ def user_has_role(user: User, allowed_roles: list) -> bool:
     if user_role in normalized_allowed_roles:
         return True
 
-    return "admin" in normalized_allowed_roles and is_admin_email(user.email)
+    return False
 
 
 def sync_admin_role_from_allowlist(db, user: User) -> User:
-    """Promote allowlisted users into the existing role-based admin system."""
-    if is_admin_email(user.email) and (user.role or "").strip().lower() != "admin":
-        try:
-            user.role = "admin"
-            db.commit()
-            db.refresh(user)
-        except SQLAlchemyError:
-            db.rollback()
-            logger.exception("Database error while promoting allowlisted admin user")
-            raise HTTPException(status_code=500, detail="Unable to complete login")
-
+    """Keep compatibility with older callers without mixing platform and business roles."""
     return user
 
 
@@ -138,3 +132,8 @@ def require_role(user: User, allowed_roles: list):
     """
     if not user_has_role(user, allowed_roles):
         raise HTTPException(status_code=403, detail="Not authorized")
+
+
+def require_platform_admin(user: User):
+    if not user_is_platform_admin(user):
+        raise HTTPException(status_code=403, detail="Admins only")
