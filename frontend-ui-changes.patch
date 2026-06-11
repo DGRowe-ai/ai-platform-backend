@@ -1,0 +1,207 @@
+From 40ff75622a99a5018b8ce6f55d9c64b9661a9acd Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursor-agent@local>
+Date: Thu, 11 Jun 2026 05:02:01 +0000
+Subject: [PATCH] feat: admin delete client and client password change UI
+
+- Add Delete Client action with name confirmation on admin dashboard
+- Add Account Security password change form on client dashboard
+---
+ frontend/admin/businesses.html |  2 +-
+ frontend/admin/businesses.js   | 55 ++++++++++++++++++++++++++++++++++
+ frontend/client-dashboard.html | 22 ++++++++++++++
+ frontend/client-dashboard.js   | 40 +++++++++++++++++++++++++
+ 4 files changed, 118 insertions(+), 1 deletion(-)
+
+diff --git a/frontend/admin/businesses.html b/frontend/admin/businesses.html
+index 6bba58b..111771a 100644
+--- a/frontend/admin/businesses.html
++++ b/frontend/admin/businesses.html
+@@ -95,6 +95,6 @@
+     </div>
+   </div>
+ 
+-  <script src="businesses.js?v=20260610-admin-list-dashboard"></script>
++  <script src="businesses.js?v=20260611-admin-delete-client"></script>
+ </body>
+ </html>
+diff --git a/frontend/admin/businesses.js b/frontend/admin/businesses.js
+index 072ae0b..84f34d7 100644
+--- a/frontend/admin/businesses.js
++++ b/frontend/admin/businesses.js
+@@ -338,6 +338,16 @@ function renderActionsCell(business) {
+   });
+   actions.appendChild(paid);
+ 
++  const deleteClient = document.createElement("button");
++  deleteClient.className = "danger";
++  deleteClient.type = "button";
++  deleteClient.textContent = "Delete Client";
++  deleteClient.addEventListener("click", event => {
++    event.stopPropagation();
++    confirmDeleteClient(business);
++  });
++  actions.appendChild(deleteClient);
++
+   return actions;
+ }
+ 
+@@ -497,6 +507,51 @@ function showRecordPaymentModal(business) {
+   ]);
+ }
+ 
++async function deleteClientBusiness(business) {
++  const businessKey = encodeURIComponent(business.businessKey);
++  return apiRequest(`/admin/businesses/${businessKey}`, {
++    method: "DELETE",
++  });
++}
++
++function confirmDeleteClient(business) {
++  const warning = document.createElement("div");
++  warning.innerHTML = `
++    <p>This permanently deletes <strong>${business.name}</strong>, removes its chatbot files, and deletes the owner account if they have no other businesses.</p>
++    <p class="muted">Type <strong>${business.name}</strong> to confirm.</p>
++    <input id="delete-confirm-input" type="text" placeholder="Business name">
++  `;
++
++  openModal(
++    "Delete client business?",
++    warning,
++    [
++      modalButton("Cancel", "secondary", closeModal),
++      modalButton("Delete Client", "danger", async () => {
++        const typed = document.getElementById("delete-confirm-input").value.trim();
++        if (typed !== business.name) {
++          openModal("Confirmation required", messageNode("Enter the exact business name to delete this client."), [
++            modalButton("Close", "secondary", closeModal),
++          ]);
++          return;
++        }
++
++        try {
++          await deleteClientBusiness(business);
++          closeModal();
++          await loadDashboard();
++          setStatus(`${business.name} deleted.`, "success");
++        } catch (err) {
++          console.error(err);
++          openModal("Unable to delete client", messageNode(err.message), [
++            modalButton("Close", "secondary", closeModal),
++          ]);
++        }
++      }),
++    ],
++  );
++}
++
+ function confirmMarkPaid(business) {
+   openModal(
+     "Mark business as paid?",
+diff --git a/frontend/client-dashboard.html b/frontend/client-dashboard.html
+index 1dbaa11..b33ea14 100644
+--- a/frontend/client-dashboard.html
++++ b/frontend/client-dashboard.html
+@@ -96,6 +96,10 @@
+       grid-column: span 5;
+     }
+ 
++    .account {
++      grid-column: span 12;
++    }
++
+     .stats-grid {
+       display: grid;
+       grid-template-columns: repeat(4, minmax(0, 1fr));
+@@ -309,6 +313,24 @@
+         <div class="chat-list" id="chat-history"></div>
+       </section>
+ 
++      <section class="card account">
++        <h2>Account Security</h2>
++        <p class="help-text">Update your password after signing in with a temporary starter password.</p>
++        <form id="password-form">
++          <label for="current-password">Current Password</label>
++          <input id="current-password" name="current_password" type="password" autocomplete="current-password" required>
++
++          <label for="new-password">New Password</label>
++          <input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="8" required>
++
++          <label for="confirm-password">Confirm New Password</label>
++          <input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="8" required>
++
++          <button id="change-password-btn" type="submit">Change Password</button>
++          <div class="status" id="password-status"></div>
++        </form>
++      </section>
++
+       <section class="card settings">
+         <h2>Chatbot Settings</h2>
+         <form id="settings-form">
+diff --git a/frontend/client-dashboard.js b/frontend/client-dashboard.js
+index bf02ba8..35d4f72 100644
+--- a/frontend/client-dashboard.js
++++ b/frontend/client-dashboard.js
+@@ -10,6 +10,11 @@ const els = {
+   refreshBtn: document.getElementById("refresh-btn"),
+   settingsForm: document.getElementById("settings-form"),
+   settingsStatus: document.getElementById("settings-status"),
++  passwordForm: document.getElementById("password-form"),
++  passwordStatus: document.getElementById("password-status"),
++  currentPassword: document.getElementById("current-password"),
++  newPassword: document.getElementById("new-password"),
++  confirmPassword: document.getElementById("confirm-password"),
+   welcomeMessage: document.getElementById("welcome-message"),
+   tone: document.getElementById("tone"),
+   chatLength: document.getElementById("chat-length"),
+@@ -461,6 +466,40 @@ async function deleteConversation(conversationId) {
+   }
+ }
+ 
++async function changePassword(event) {
++  event.preventDefault();
++
++  const currentPassword = els.currentPassword.value;
++  const newPassword = els.newPassword.value;
++  const confirmPassword = els.confirmPassword.value;
++
++  if (newPassword.length < 8) {
++    setStatus(els.passwordStatus, "New password must be at least 8 characters.", "error");
++    return;
++  }
++
++  if (newPassword !== confirmPassword) {
++    setStatus(els.passwordStatus, "New passwords do not match.", "error");
++    return;
++  }
++
++  try {
++    setStatus(els.passwordStatus, "Updating password...");
++    await apiRequest("/client/change_password", {
++      method: "POST",
++      body: JSON.stringify({
++        current_password: currentPassword,
++        new_password: newPassword,
++      }),
++    });
++    els.passwordForm.reset();
++    setStatus(els.passwordStatus, "Password updated successfully.", "success");
++  } catch (err) {
++    console.error(err);
++    setStatus(els.passwordStatus, err.message || "Unable to update password.", "error");
++  }
++}
++
+ async function saveSettings(event) {
+   event.preventDefault();
+ 
+@@ -506,6 +545,7 @@ document.addEventListener("DOMContentLoaded", () => {
+   els.logoutBtn.addEventListener("click", logout);
+   els.refreshBtn.addEventListener("click", reloadDashboard);
+   els.settingsForm.addEventListener("submit", saveSettings);
++  els.passwordForm.addEventListener("submit", changePassword);
+ 
+   reloadDashboard();
+ });
+-- 
+2.43.0
+

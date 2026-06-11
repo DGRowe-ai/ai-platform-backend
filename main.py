@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "client-login-routing-2026-06-11-2"
+DEPLOYMENT_VERSION = "admin-delete-client-password-2026-06-11-1"
 
 # -------------------------------------------------
 # Load environment
@@ -193,6 +193,10 @@ class InviteRequest(BaseModel):
 class SetPasswordRequest(BaseModel):
     user_id: int
     password: str
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 class UpdateBusinessRequest(BaseModel):
     folder_name: str
@@ -785,6 +789,36 @@ def save_client_chatbot_settings(
     require_role_guard(user, ["owner", "admin", "staff"])
     business = get_client_business(db, user)
     return update_settings(business.id, data)
+
+
+@app.post("/client/change_password")
+def change_client_password(
+    req: ChangePasswordRequest,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner"])
+
+    if len(req.new_password.strip()) < 8:
+        raise HTTPException(
+            status_code=400,
+            detail="New password must be at least 8 characters",
+        )
+
+    if not verify_password(req.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    try:
+        user.password_hash = hash_password(req.new_password)
+        db.add(user)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error while changing password for user_id=%s", user.id)
+        raise HTTPException(status_code=500, detail="Unable to update password")
+
+    return {"message": "Password updated successfully"}
+
 
 @app.get("/business/{business_id}")
 def get_business(
