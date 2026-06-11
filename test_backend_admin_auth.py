@@ -96,9 +96,9 @@ class BackendAdminAuthTests(unittest.TestCase):
     def test_allowlisted_user_is_promoted_and_can_access_admin_routes(self):
         login_response = self.login("admin@example.com")
 
-        self.assertEqual(login_response["role"], "admin")
+        self.assertEqual(login_response["role"], "owner")
         self.assertEqual(login_response["business_role"], "owner")
-        self.assertTrue(login_response["is_admin"])
+        self.assertNotIn("is_admin", login_response)
         self.assertTrue(login_response["is_platform_admin"])
 
         headers = self.auth_headers(login_response["access_token"])
@@ -113,7 +113,7 @@ class BackendAdminAuthTests(unittest.TestCase):
         login_response = self.login("client@example.com")
 
         self.assertEqual(login_response["role"], "owner")
-        self.assertFalse(login_response["is_admin"])
+        self.assertNotIn("is_admin", login_response)
         self.assertFalse(login_response["is_platform_admin"])
 
         headers = self.auth_headers(login_response["access_token"])
@@ -140,7 +140,7 @@ class BackendAdminAuthTests(unittest.TestCase):
 
         self.assertEqual(login_response["role"], "business_admin")
         self.assertEqual(login_response["business_role"], "admin")
-        self.assertFalse(login_response["is_admin"])
+        self.assertNotIn("is_admin", login_response)
         self.assertFalse(login_response["is_platform_admin"])
 
         headers = self.auth_headers(login_response["access_token"])
