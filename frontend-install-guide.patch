@@ -1,0 +1,672 @@
+From b231231eaa28954bebf9c348193f84ced8334885 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursor-agent@local>
+Date: Thu, 11 Jun 2026 09:22:27 +0000
+Subject: [PATCH] feat: add PDF-ready chatbot install guide and dashboard
+ section
+
+- install-guide.html with print styles, TOC, and screenshot placeholders
+- Client dashboard Install Chatbot card with embed code, test link, and guide buttons
+---
+ frontend/client-dashboard.html |  44 ++++
+ frontend/client-dashboard.js   |  95 +++++++
+ frontend/install-guide.html    | 459 +++++++++++++++++++++++++++++++++
+ 3 files changed, 598 insertions(+)
+ create mode 100644 frontend/install-guide.html
+
+diff --git a/frontend/client-dashboard.html b/frontend/client-dashboard.html
+index b33ea14..aa45870 100644
+--- a/frontend/client-dashboard.html
++++ b/frontend/client-dashboard.html
+@@ -100,6 +100,31 @@
+       grid-column: span 12;
+     }
+ 
++    .install {
++      grid-column: span 12;
++    }
++
++    .install-actions {
++      display: flex;
++      flex-wrap: wrap;
++      gap: 10px;
++      margin: 12px 0 16px;
++    }
++
++    .code-block {
++      width: 100%;
++      border: 1px solid var(--border);
++      border-radius: 10px;
++      padding: 12px;
++      font-family: Consolas, "Courier New", monospace;
++      font-size: 13px;
++      background: #0f172a;
++      color: #e2e8f0;
++      white-space: pre-wrap;
++      word-break: break-word;
++      min-height: 110px;
++    }
++
+     .stats-grid {
+       display: grid;
+       grid-template-columns: repeat(4, minmax(0, 1fr));
+@@ -313,6 +338,25 @@
+         <div class="chat-list" id="chat-history"></div>
+       </section>
+ 
++      <section class="card install">
++        <h2>Install Chatbot on Your Website</h2>
++        <p class="help-text">Use your personalized embed code and step-by-step guide to add the chatbot to your site.</p>
++
++        <label for="test-chat-link">Test chat page</label>
++        <input id="test-chat-link" type="text" readonly>
++
++        <label for="embed-code">Your embed code</label>
++        <pre class="code-block" id="embed-code">Loading your embed code...</pre>
++
++        <div class="install-actions">
++          <button type="button" id="copy-embed-btn">Copy Embed Code</button>
++          <button class="secondary" type="button" id="open-test-chat-btn">Open Test Chat</button>
++          <button class="secondary" type="button" id="open-guide-btn">Open Install Guide</button>
++          <button class="secondary" type="button" id="download-guide-btn">Download PDF Guide</button>
++        </div>
++        <div class="status" id="install-status"></div>
++      </section>
++
+       <section class="card account">
+         <h2>Account Security</h2>
+         <p class="help-text">Update your password after signing in with a temporary starter password.</p>
+diff --git a/frontend/client-dashboard.js b/frontend/client-dashboard.js
+index 35d4f72..c9b6840 100644
+--- a/frontend/client-dashboard.js
++++ b/frontend/client-dashboard.js
+@@ -1,4 +1,10 @@
+ const API_URL = "https://ai-platform-backend-ulqs.onrender.com";
++const FRONTEND_BASE = "https://ai-platform-frontend-uaaa.onrender.com";
++
++const state = {
++  businessName: "",
++  businessFolder: "",
++};
+ 
+ const els = {
+   analyticsCards: document.getElementById("analytics-cards"),
+@@ -20,6 +26,13 @@ const els = {
+   chatLength: document.getElementById("chat-length"),
+   customInstructions: document.getElementById("custom-instructions"),
+   faqs: document.getElementById("faqs"),
++  testChatLink: document.getElementById("test-chat-link"),
++  embedCode: document.getElementById("embed-code"),
++  copyEmbedBtn: document.getElementById("copy-embed-btn"),
++  openTestChatBtn: document.getElementById("open-test-chat-btn"),
++  openGuideBtn: document.getElementById("open-guide-btn"),
++  downloadGuideBtn: document.getElementById("download-guide-btn"),
++  installStatus: document.getElementById("install-status"),
+ };
+ 
+ function getToken() {
+@@ -182,8 +195,86 @@ function appendText(parent, text, className) {
+ function renderBusinessName(data) {
+   const business = data?.business || data?.business_info || data?.businesses?.[0] || data || {};
+   const name = getFirstValue(business, ["name", "business_name", "businessName", "folder_name"]);
++  const folderName = getFirstValue(business, ["folder_name", "business_id", "id"]);
++
++  state.businessName = name || "";
++  state.businessFolder = folderName || "";
+ 
+   els.businessName.textContent = name ? `Business: ${name}` : "Business dashboard";
++  renderInstallSection();
++}
++
++function buildEmbedCode(businessFolder) {
++  return `<!-- Rowe AI Chatbot -->
++<script
++  src="${FRONTEND_BASE}/widget.js"
++  data-business="${businessFolder}"
++></script>`;
++}
++
++function buildTestChatUrl(businessFolder) {
++  return `${FRONTEND_BASE}/chat.html?b=${encodeURIComponent(businessFolder)}`;
++}
++
++function buildInstallGuideUrl() {
++  const params = new URLSearchParams();
++  if (state.businessFolder) {
++    params.set("b", state.businessFolder);
++  }
++  if (state.businessName) {
++    params.set("name", state.businessName);
++  }
++  const query = params.toString();
++  return `${FRONTEND_BASE}/install-guide.html${query ? `?${query}` : ""}`;
++}
++
++function renderInstallSection() {
++  if (!state.businessFolder) {
++    els.testChatLink.value = "";
++    els.embedCode.textContent = "Your embed code will appear here after your business loads.";
++    return;
++  }
++
++  els.testChatLink.value = buildTestChatUrl(state.businessFolder);
++  els.embedCode.textContent = buildEmbedCode(state.businessFolder);
++}
++
++async function copyEmbedCode() {
++  if (!state.businessFolder) {
++    setStatus(els.installStatus, "Business details are still loading.", "error");
++    return;
++  }
++
++  try {
++    await navigator.clipboard.writeText(buildEmbedCode(state.businessFolder));
++    setStatus(els.installStatus, "Embed code copied to clipboard.", "success");
++  } catch (err) {
++    console.error(err);
++    setStatus(els.installStatus, "Unable to copy automatically. Select the code and copy it manually.", "error");
++  }
++}
++
++function openTestChat() {
++  if (!state.businessFolder) {
++    setStatus(els.installStatus, "Business details are still loading.", "error");
++    return;
++  }
++
++  window.open(buildTestChatUrl(state.businessFolder), "_blank", "noopener");
++}
++
++function openInstallGuide() {
++  window.open(buildInstallGuideUrl(), "_blank", "noopener");
++}
++
++function downloadInstallGuidePdf() {
++  const guideWindow = window.open(buildInstallGuideUrl(), "_blank", "noopener");
++  if (!guideWindow) {
++    setStatus(els.installStatus, "Allow pop-ups, then try Download PDF Guide again.", "error");
++    return;
++  }
++
++  setStatus(els.installStatus, "In the guide tab, click Download / Print PDF and choose Save as PDF.", "success");
+ }
+ 
+ function renderAnalytics(data) {
+@@ -546,6 +637,10 @@ document.addEventListener("DOMContentLoaded", () => {
+   els.refreshBtn.addEventListener("click", reloadDashboard);
+   els.settingsForm.addEventListener("submit", saveSettings);
+   els.passwordForm.addEventListener("submit", changePassword);
++  els.copyEmbedBtn.addEventListener("click", copyEmbedCode);
++  els.openTestChatBtn.addEventListener("click", openTestChat);
++  els.openGuideBtn.addEventListener("click", openInstallGuide);
++  els.downloadGuideBtn.addEventListener("click", downloadInstallGuidePdf);
+ 
+   reloadDashboard();
+ });
+diff --git a/frontend/install-guide.html b/frontend/install-guide.html
+new file mode 100644
+index 0000000..1982747
+--- /dev/null
++++ b/frontend/install-guide.html
+@@ -0,0 +1,459 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1.0">
++  <title>Rowe AI Chatbot — Installation Guide</title>
++  <style>
++    :root {
++      --text: #172033;
++      --muted: #475569;
++      --border: #cbd5e1;
++      --primary: #2563eb;
++      --placeholder: #f1f5f9;
++    }
++
++    * { box-sizing: border-box; }
++
++    body {
++      margin: 0;
++      font-family: "Segoe UI", Arial, sans-serif;
++      color: var(--text);
++      line-height: 1.55;
++      background: #ffffff;
++    }
++
++    .screen-only {
++      background: #0f172a;
++      color: #fff;
++      padding: 14px 24px;
++      display: flex;
++      flex-wrap: wrap;
++      gap: 12px;
++      align-items: center;
++      justify-content: space-between;
++    }
++
++    .screen-only button,
++    .screen-only a.button {
++      border: 0;
++      border-radius: 8px;
++      padding: 10px 14px;
++      font-weight: 700;
++      cursor: pointer;
++      text-decoration: none;
++      display: inline-block;
++      background: #2563eb;
++      color: #fff;
++    }
++
++    .screen-only .secondary {
++      background: #334155;
++      color: #fff;
++    }
++
++    .doc {
++      max-width: 820px;
++      margin: 0 auto;
++      padding: 40px 32px 64px;
++    }
++
++    .cover {
++      text-align: center;
++      padding: 48px 0 36px;
++      border-bottom: 2px solid var(--border);
++      margin-bottom: 36px;
++    }
++
++    .cover h1 {
++      font-size: 34px;
++      margin: 0 0 10px;
++      letter-spacing: -0.02em;
++    }
++
++    .cover p {
++      color: var(--muted);
++      margin: 6px 0;
++      font-size: 16px;
++    }
++
++    .meta-box {
++      display: inline-block;
++      margin-top: 18px;
++      padding: 12px 18px;
++      border: 1px solid var(--border);
++      border-radius: 10px;
++      text-align: left;
++      background: #f8fafc;
++      font-size: 14px;
++    }
++
++    h2 {
++      font-size: 24px;
++      margin: 36px 0 12px;
++      padding-top: 8px;
++      border-top: 1px solid #e2e8f0;
++    }
++
++    h3 {
++      font-size: 18px;
++      margin: 22px 0 8px;
++    }
++
++    p, li {
++      font-size: 15px;
++    }
++
++    ol, ul {
++      padding-left: 22px;
++    }
++
++    li { margin: 8px 0; }
++
++    .toc {
++      background: #f8fafc;
++      border: 1px solid var(--border);
++      border-radius: 12px;
++      padding: 18px 22px;
++      margin: 24px 0 32px;
++    }
++
++    .toc ol { margin: 0; }
++
++    code, pre {
++      font-family: Consolas, "Courier New", monospace;
++      font-size: 13px;
++    }
++
++    pre {
++      background: #0f172a;
++      color: #e2e8f0;
++      padding: 16px;
++      border-radius: 10px;
++      overflow-x: auto;
++      white-space: pre-wrap;
++      word-break: break-word;
++      margin: 12px 0 18px;
++    }
++
++    .screenshot {
++      border: 2px dashed #94a3b8;
++      background: var(--placeholder);
++      border-radius: 12px;
++      min-height: 220px;
++      display: flex;
++      align-items: center;
++      justify-content: center;
++      text-align: center;
++      color: #64748b;
++      padding: 24px;
++      margin: 14px 0 20px;
++      page-break-inside: avoid;
++    }
++
++    .screenshot strong {
++      display: block;
++      color: #334155;
++      margin-bottom: 8px;
++      font-size: 15px;
++    }
++
++    .callout {
++      border-left: 4px solid var(--primary);
++      background: #eff6ff;
++      padding: 14px 16px;
++      border-radius: 0 10px 10px 0;
++      margin: 16px 0;
++      font-size: 14px;
++    }
++
++    .checklist {
++      list-style: none;
++      padding: 0;
++    }
++
++    .checklist li::before {
++      content: "☐ ";
++      font-weight: 700;
++    }
++
++    .page-break {
++      page-break-before: always;
++    }
++
++    footer {
++      margin-top: 40px;
++      padding-top: 16px;
++      border-top: 1px solid var(--border);
++      color: var(--muted);
++      font-size: 13px;
++      text-align: center;
++    }
++
++    @media print {
++      .screen-only { display: none !important; }
++      .doc { padding: 0; max-width: none; }
++      h2 { page-break-after: avoid; }
++      pre, .screenshot { page-break-inside: avoid; }
++    }
++
++    @page {
++      margin: 18mm 16mm;
++    }
++  </style>
++</head>
++<body>
++  <div class="screen-only">
++    <div>
++      <strong>Rowe AI Installation Guide</strong>
++      <span id="screen-business-label" style="opacity:0.85;margin-left:8px;"></span>
++    </div>
++    <div style="display:flex;gap:10px;flex-wrap:wrap;">
++      <button type="button" onclick="window.print()">Download / Print PDF</button>
++      <a class="button secondary" href="client-dashboard.html">Back to Dashboard</a>
++    </div>
++  </div>
++
++  <article class="doc">
++    <header class="cover">
++      <h1>Rowe AI Chatbot Installation Guide</h1>
++      <p>Step-by-step instructions for adding your AI chatbot to your website</p>
++      <div class="meta-box">
++        <div><strong>Business:</strong> <span id="business-name">Your Business</span></div>
++        <div><strong>Business ID:</strong> <span id="business-id">your_business_id</span></div>
++        <div><strong>Guide version:</strong> June 2026</div>
++      </div>
++    </header>
++
++    <section class="toc">
++      <h2 style="margin-top:0;border:0;padding:0;font-size:20px;">Table of Contents</h2>
++      <ol>
++        <li>Before You Begin</li>
++        <li>Test Your Chatbot</li>
++        <li>Get Your Embed Code</li>
++        <li>Install on Any Website (HTML)</li>
++        <li>Install on WordPress</li>
++        <li>Install on Shopify</li>
++        <li>Install on Wix / Squarespace</li>
++        <li>Troubleshooting</li>
++        <li>Support Checklist</li>
++      </ol>
++    </section>
++
++    <section id="before-you-begin">
++      <h2>1. Before You Begin</h2>
++      <p>You will need:</p>
++      <ul>
++        <li>Access to edit your website (HTML, theme editor, or site builder)</li>
++        <li>Your <strong>Business ID</strong> shown on the cover of this guide</li>
++        <li>About 10–15 minutes for your first install</li>
++      </ul>
++      <div class="callout">
++        <strong>Tip:</strong> Complete your subscription activation from your welcome email before going live, so your chatbot stays active for visitors.
++      </div>
++      <div class="screenshot">
++        <div>
++          <strong>[Screenshot Placeholder 1]</strong>
++          Client dashboard showing your business name and Install Chatbot section<br>
++          <em>Replace with a screenshot of your Rowe AI client dashboard.</em>
++        </div>
++      </div>
++    </section>
++
++    <section id="test-chatbot">
++      <h2>2. Test Your Chatbot</h2>
++      <p>Before embedding the chatbot on your live site, open your dedicated test page and send a message.</p>
++      <ol>
++        <li>Copy your test link:</li>
++      </ol>
++      <pre id="test-link-block">https://ai-platform-frontend-uaaa.onrender.com/chat.html?b=your_business_id</pre>
++      <ol start="2">
++        <li>Paste the link into your browser and press Enter.</li>
++        <li>Type a question your customers might ask (for example, business hours or services).</li>
++        <li>Confirm the chatbot responds using your business information.</li>
++      </ol>
++      <div class="screenshot">
++        <div>
++          <strong>[Screenshot Placeholder 2]</strong>
++          Standalone chat page with a sample question and AI response<br>
++          <em>Replace with a screenshot of chat.html working for your business.</em>
++        </div>
++      </div>
++    </section>
++
++    <section id="embed-code" class="page-break">
++      <h2>3. Get Your Embed Code</h2>
++      <p>Copy the code below exactly. Your Business ID is already filled in for you.</p>
++      <pre id="embed-code-block">&lt;!-- Rowe AI Chatbot --&gt;
++&lt;script
++  src="https://ai-platform-frontend-uaaa.onrender.com/widget.js"
++  data-business="your_business_id"
++&gt;&lt;/script&gt;</pre>
++      <p>This code adds a floating chat bubble to the bottom-right of your website. Visitors click it to open the chat window.</p>
++      <div class="screenshot">
++        <div>
++          <strong>[Screenshot Placeholder 3]</strong>
++          Website with the chat bubble visible in the bottom-right corner<br>
++          <em>Replace with a screenshot of the widget on a sample page.</em>
++        </div>
++      </div>
++    </section>
++
++    <section id="html-install">
++      <h2>4. Install on Any Website (HTML)</h2>
++      <ol>
++        <li>Open your website files or site editor.</li>
++        <li>Find the closing <code>&lt;/body&gt;</code> tag on the pages where you want the chatbot.</li>
++        <li>Paste your embed code <strong>immediately before</strong> <code>&lt;/body&gt;</code>.</li>
++        <li>Save and publish your changes.</li>
++        <li>Visit your live site and look for the chat bubble in the bottom-right corner.</li>
++      </ol>
++      <div class="screenshot">
++        <div>
++          <strong>[Screenshot Placeholder 4]</strong>
++          HTML editor with embed code pasted before &lt;/body&gt;<br>
++          <em>Replace with a screenshot from your code editor or hosting file manager.</em>
++        </div>
++      </div>
++    </section>
++
++    <section id="wordpress">
++      <h2>5. Install on WordPress</h2>
++      <h3>Option A — Plugin (recommended for beginners)</h3>
++      <ol>
++        <li>Log in to WordPress Admin.</li>
++        <li>Go to <strong>Plugins → Add New</strong> and search for <strong>Insert Headers and Footers</strong> (or similar).</li>
++        <li>Install and activate the plugin.</li>
++        <li>Go to <strong>Settings → Insert Headers and Footers</strong>.</li>
++        <li>Paste your embed code into the <strong>Footer</strong> box.</li>
++        <li>Click <strong>Save</strong> and visit your site to test.</li>
++      </ol>
++      <div class="screenshot">
++        <div>
++          <strong>[Screenshot Placeholder 5]</strong>
++          WordPress Insert Headers and Footers plugin with code in the Footer field<br>
++          <em>Replace with your WordPress admin screenshot.</em>
++        </div>
++      </div>
++      <h3>Option B — Theme footer</h3>
++      <ol>
++        <li>Go to <strong>Appearance → Theme File Editor</strong>.</li>
++        <li>Open <code>footer.php</code> (or use a child theme).</li>
++        <li>Paste the embed code before <code>&lt;/body&gt;</code>.</li>
++        <li>Update the file and test your homepage.</li>
++      </ol>
++    </section>
++
++    <section id="shopify" class="page-break">
++      <h2>6. Install on Shopify</h2>
++      <ol>
++        <li>Log in to Shopify Admin.</li>
++        <li>Go to <strong>Online Store → Themes</strong>.</li>
++        <li>Click <strong>Edit code</strong> on your active theme.</li>
++        <li>Open <code>Layout → theme.liquid</code>.</li>
++        <li>Paste your embed code just before <code>&lt;/body&gt;</code>.</li>
++        <li>Click <strong>Save</strong> and preview your storefront.</li>
++      </ol>
++      <div class="screenshot">
++        <div>
++          <strong>[Screenshot Placeholder 6]</strong>
++          Shopify theme.liquid with embed code before &lt;/body&gt;<br>
++          <em>Replace with your Shopify code editor screenshot.</em>
++        </div>
++      </div>
++    </section>
++
++    <section id="wix-squarespace">
++      <h2>7. Install on Wix / Squarespace</h2>
++      <h3>Wix</h3>
++      <ol>
++        <li>Open the Wix Editor for your site.</li>
++        <li>Click <strong>Settings → Custom Code</strong> (or <strong>Tracking & Analytics</strong>).</li>
++        <li>Choose <strong>Add Custom Code</strong>.</li>
++        <li>Paste your embed code, set it to load on <strong>All Pages</strong>, place in <strong>Body - end</strong>.</li>
++        <li>Apply and publish.</li>
++      </ol>
++      <h3>Squarespace</h3>
++      <ol>
++        <li>Go to <strong>Settings → Advanced → Code Injection</strong>.</li>
++        <li>Paste your embed code into the <strong>Footer</strong> field.</li>
++        <li>Save and refresh your site.</li>
++      </ol>
++      <div class="screenshot">
++        <div>
++          <strong>[Screenshot Placeholder 7]</strong>
++          Wix or Squarespace custom code / code injection screen<br>
++          <em>Replace with your site builder screenshot.</em>
++        </div>
++      </div>
++    </section>
++
++    <section id="troubleshooting">
++      <h2>8. Troubleshooting</h2>
++      <table style="width:100%;border-collapse:collapse;font-size:14px;">
++        <thead>
++          <tr>
++            <th style="border:1px solid var(--border);padding:10px;text-align:left;background:#f8fafc;">Problem</th>
++            <th style="border:1px solid var(--border);padding:10px;text-align:left;background:#f8fafc;">What to try</th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr>
++            <td style="border:1px solid var(--border);padding:10px;">Chat bubble does not appear</td>
++            <td style="border:1px solid var(--border);padding:10px;">Confirm the embed code is before <code>&lt;/body&gt;</code>, clear browser cache, and verify your Business ID.</td>
++          </tr>
++          <tr>
++            <td style="border:1px solid var(--border);padding:10px;">Chat opens but does not reply</td>
++            <td style="border:1px solid var(--border);padding:10px;">Check your subscription is active and test the standalone chat link in Section 2.</td>
++          </tr>
++          <tr>
++            <td style="border:1px solid var(--border);padding:10px;">Wrong business answers</td>
++            <td style="border:1px solid var(--border);padding:10px;">Update FAQs and custom instructions in your client dashboard Chatbot Settings.</td>
++          </tr>
++        </tbody>
++      </table>
++    </section>
++
++    <section id="checklist">
++      <h2>9. Support Checklist</h2>
++      <ul class="checklist">
++        <li>I tested my chatbot using the standalone test link</li>
++        <li>I pasted the embed code before <code>&lt;/body&gt;</code></li>
++        <li>I published/saved changes on my website platform</li>
++        <li>I see the chat bubble on my live homepage</li>
++        <li>I sent a test message as a visitor</li>
++        <li>I updated my password in the client dashboard</li>
++      </ul>
++      <div class="callout">
++        Need help? Reply to your Rowe AI welcome email or contact your account administrator with your Business ID and website URL.
++      </div>
++    </section>
++
++    <footer>
++      Rowe AI · Chatbot Installation Guide · <span id="footer-business-id">your_business_id</span>
++    </footer>
++  </article>
++
++  <script>
++    const FRONTEND_BASE = "https://ai-platform-frontend-uaaa.onrender.com";
++    const params = new URLSearchParams(window.location.search);
++    const businessId = (params.get("b") || params.get("business") || "your_business_id").trim();
++    const businessName = (params.get("name") || "Your Business").trim();
++
++    document.getElementById("business-id").textContent = businessId;
++    document.getElementById("footer-business-id").textContent = businessId;
++    document.getElementById("business-name").textContent = businessName;
++    document.getElementById("screen-business-label").textContent = `(${businessName})`;
++
++    const testLink = `${FRONTEND_BASE}/chat.html?b=${encodeURIComponent(businessId)}`;
++    document.getElementById("test-link-block").textContent = testLink;
++
++    const embedCode = `<!-- Rowe AI Chatbot -->
++<script
++  src="${FRONTEND_BASE}/widget.js"
++  data-business="${businessId}"
++><\/script>`;
++    document.getElementById("embed-code-block").textContent = embedCode;
++  </script>
++</body>
++</html>
+-- 
+2.43.0
+
