@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "admin-auth-allowlist-2026-06-10-1"
+DEPLOYMENT_VERSION = "client-login-routing-2026-06-11-1"
 
 # -------------------------------------------------
 # Load environment
@@ -79,11 +79,11 @@ from auth_utils import (
     verify_password,
     create_access_token,
     get_current_user,
-    is_admin_email,
     parse_admin_emails,
+    require_platform_admin,
     require_role,
     sync_admin_role_from_allowlist,
-    user_has_role,
+    user_is_platform_admin,
 )
 
 # -------------------------------------------------
@@ -132,22 +132,7 @@ def apply_admin_email_allowlist():
     if not admin_emails:
         return
 
-    db = SessionLocal()
-    try:
-        users = db.query(User).filter(func.lower(User.email).in_(admin_emails)).all()
-        updated = False
-        for user in users:
-            if (user.role or "").strip().lower() != "admin":
-                user.role = "admin"
-                updated = True
-
-        if updated:
-            db.commit()
-    except SQLAlchemyError:
-        db.rollback()
-        logger.exception("Database error while applying ADMIN_EMAILS allowlist")
-    finally:
-        db.close()
+    logger.info("Loaded %s platform admin email(s) from ADMIN_EMAILS", len(admin_emails))
 
 
 def ensure_business_settings_schema():
@@ -289,6 +274,17 @@ def require_role_guard(user: User, allowed_roles: list[str]):
     if user.role not in allowed_roles:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+
+def get_login_role_for_client(user: User) -> str:
+    role = (user.role or "owner").strip().lower()
+    if user_is_platform_admin(user):
+        return "admin"
+
+    if role == "admin":
+        return "business_admin"
+
+    return role
+
 # -------------------------------------------------
 # Analytics helper
 # -------------------------------------------------
@@ -366,7 +362,9 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = sync_admin_role_from_allowlist(db, user)
 
     user_id = user.id
-    role = user.role
+    business_role = (user.role or "owner").strip().lower()
+    role = get_login_role_for_client(user)
+    is_platform_admin = user_is_platform_admin(user)
     subscription_active = user.subscription_active
     business_id = user.business_id
     businesses = get_business_summaries_for_user(db, user_id, fail_on_error=False)
@@ -374,6 +372,10 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     token = create_access_token({
         "user_id": user_id,
         "role": role,
+        "business_role": business_role,
+        "account_role": business_role,
+        "is_admin": is_platform_admin,
+        "is_platform_admin": is_platform_admin,
         "subscription_active": subscription_active,
         "business_id": business_id
     })
@@ -384,6 +386,10 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         "user_id": user_id,
         "subscription_active": subscription_active,
         "role": role,
+        "business_role": business_role,
+        "account_role": business_role,
+        "is_admin": is_platform_admin,
+        "is_platform_admin": is_platform_admin,
         "business_id": business_id,
         "businesses": businesses,
     }
@@ -400,7 +406,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
     new_user = User(
         email=req.email,
         password_hash=hash_password(req.password),
-        role="admin" if is_admin_email(req.email) else "owner",
+        role="owner",
         subscription_active=True
     )
     db.add(new_user)
@@ -912,8 +918,7 @@ Knowledge Base:
 def get_current_admin(
     current_user: User = Depends(get_current_user)
 ):
-    if not user_has_role(current_user, ["admin"]):
-        raise HTTPException(status_code=403, detail="Admins only")
+    require_platform_admin(current_user)
     return current_user
 
 @app.post("/signup")
@@ -933,8 +938,6 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
         logger.warning("Completing interrupted signup for user_id=%s", user.id)
         user.password_hash = hash_password(req.password)
         user.role = user.role or "owner"
-        if is_admin_email(email):
-            user.role = "admin"
         if user.subscription_active is None:
             user.subscription_active = 0
     else:
@@ -942,7 +945,7 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
             email=email,
             password_hash=hash_password(req.password),
             subscription_active=0,
-            role="admin" if is_admin_email(email) else "owner",
+            role="owner",
         )
         db.add(user)
 
