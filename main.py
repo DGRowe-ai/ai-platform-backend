@@ -67,8 +67,8 @@ def get_cors_origins():
 # -------------------------------------------------
 # Database + models
 # -------------------------------------------------
-from database import Base, engine, SessionLocal
-from models import User, Business, MessageLog, Conversation
+from database import Base, engine, SessionLocal, get_db
+from models import User, Business, MessageLog, Conversation, Payment, ReportRun
 Base.metadata.create_all(bind=engine)
 
 # -------------------------------------------------
@@ -119,12 +119,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # -------------------------------------------------
 # Database session dependency
 # -------------------------------------------------
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+from database import get_db
 
 # -------------------------------------------------
 # Chat history utilities

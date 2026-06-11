@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Float
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -153,3 +153,35 @@ class RateLimit(Base):
     business_id = Column(Integer, index=True)
     ip_address = Column(String, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+# ============================
+# PAYMENTS (manual + tracked)
+# ============================
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), index=True)
+    amount = Column(Float, nullable=False, default=0.0)
+    payment_date = Column(DateTime, default=datetime.utcnow)
+    payment_type = Column(String, default="first_payment")
+    next_renewal_date = Column(DateTime, nullable=True)
+    notes = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    business = relationship("Business")
+
+
+# ============================
+# REPORT RUN LOG
+# ============================
+class ReportRun(Base):
+    __tablename__ = "report_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_type = Column(String, index=True)
+    sent_at = Column(DateTime, default=datetime.utcnow)
+    recipient = Column(String)
+    status = Column(String, default="sent")
+    notes = Column(Text, default="")
