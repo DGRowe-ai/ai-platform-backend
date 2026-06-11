@@ -1,9 +1,14 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from auth_utils import get_current_user, require_platform_admin
 from admin_analytics import get_admin_analytics
+from business_utils import delete_business_for_admin
 from database import SessionLocal
 from models import Business, User
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -48,3 +53,27 @@ def admin_get_all_businesses(
         })
 
     return output
+
+
+@router.delete("/admin/businesses/{business_key}")
+def admin_delete_business(
+    business_key: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_platform_admin(user)
+
+    try:
+        result = delete_business_for_admin(db, business_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error while deleting business_key=%s", business_key)
+        raise HTTPException(status_code=500, detail="Unable to delete business")
+    except Exception:
+        db.rollback()
+        logger.exception("Unexpected error while deleting business_key=%s", business_key)
+        raise HTTPException(status_code=500, detail="Unable to delete business")
+
+    return result
