@@ -201,6 +201,10 @@ class PublicChatRequest(BaseModel):
     business_id: str
     message: str
 
+class ClientChatRequest(BaseModel):
+    message: str
+    client_id: int | None = None
+
 class SignupRequest(BaseModel):
     email: str
     password: str
@@ -907,6 +911,40 @@ def remove_knowledge_file(
     require_role_guard(user, ["owner", "admin", "staff"])
     business = get_client_business(db, user)
     return delete_knowledge_file(db, business, file_id)
+
+
+MAX_CLIENT_CHAT_MESSAGE_LENGTH = 2000
+
+
+@app.post("/api/chat")
+def client_test_chat(
+    req: ClientChatRequest,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+
+    if req.client_id is not None and req.client_id != business.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    message = (req.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    if len(message) > MAX_CLIENT_CHAT_MESSAGE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Message exceeds the {MAX_CLIENT_CHAT_MESSAGE_LENGTH} character limit",
+        )
+
+    reply = _execute_chat(
+        business_id=business.id,
+        message=message,
+        db=db,
+        conversation_id=None,
+    )
+    return {"reply": reply}
 
 
 @app.get("/business/{business_id}")
