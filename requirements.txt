@@ -9,3 +9,6 @@ python-jose[cryptography]
 pydantic
 stripe
 reportlab
+pypdf
+python-docx
+python-multipart

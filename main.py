@@ -5,6 +5,8 @@ from fastapi import (
     Request,
     Header,
     Response,
+    File,
+    UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
@@ -68,7 +70,7 @@ def get_cors_origins():
 # Database + models
 # -------------------------------------------------
 from database import Base, engine, SessionLocal, get_db
-from models import User, Business, MessageLog, Conversation, Payment, ReportRun
+from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding
 Base.metadata.create_all(bind=engine)
 
 # -------------------------------------------------
@@ -98,6 +100,12 @@ from audit_utils import log_event
 from email_utils import send_email
 from admin_analytics import get_admin_analytics
 from business_settings_utils import get_settings, update_settings
+from knowledge_utils import (
+    delete_knowledge_file,
+    ingest_knowledge_file,
+    list_knowledge_files,
+    retrieve_knowledge_context,
+)
 from stripe_checkout_utils import (
     build_checkout_activation_url,
     create_subscription_checkout_session,
@@ -450,19 +458,45 @@ app.include_router(business_settings_router)
 # -------------------------------------------------
 # SHARED CHAT EXECUTION HELPER
 # -------------------------------------------------
+def resolve_business(db: Session, business_id):
+    if business_id is None:
+        return None
+
+    if isinstance(business_id, int):
+        return db.query(Business).filter(Business.id == business_id).first()
+
+    business_key = str(business_id)
+    if business_key.isdigit():
+        business = db.query(Business).filter(Business.id == int(business_key)).first()
+        if business:
+            return business
+
+    return db.query(Business).filter(Business.folder_name == business_key).first()
+
+
 def _execute_chat(
     business_id: str,
     message: str,
     db: Session,
     conversation_id: int | None = None,
 ):
-    settings = get_settings(business_id)
+    business = resolve_business(db, business_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    settings = get_settings(business.id)
     faq_items = settings.get("faqs", [])
     faq_text = "\n".join(
         f"Q: {item.get('question', '')}\nA: {item.get('answer', '')}"
         for item in faq_items
         if isinstance(item, dict)
     )
+
+    kb_context = retrieve_knowledge_context(db, business.id, message)
+    legacy_kb = ""
+    kb_path = Path(__file__).parent / "businesses" / business.folder_name / "knowledge.txt"
+    if kb_path.exists():
+        legacy_kb = kb_path.read_text(encoding="utf-8", errors="ignore").strip()
 
     system_prompt = f"""
     You are a chatbot for this business.
@@ -473,8 +507,13 @@ def _execute_chat(
     {faq_text or 'No FAQs configured.'}
     """
 
-    save_message(business_id, conversation_id, "user", message)
-    history = get_history(business_id)
+    if kb_context:
+        system_prompt += f"\nRelevant uploaded knowledge:\n{kb_context}"
+    if legacy_kb:
+        system_prompt += f"\nAdditional business knowledge:\n{legacy_kb[:4000]}"
+
+    save_message(business.id, conversation_id, "user", message)
+    history = get_history(business.id)
 
     conversation = [{"role": "system", "content": system_prompt}]
     for msg in history:
@@ -489,7 +528,7 @@ def _execute_chat(
     )
 
     bot_reply = response.choices[0].message.content
-    save_message(business_id, conversation_id, "assistant", bot_reply)
+    save_message(business.id, conversation_id, "assistant", bot_reply)
 
     return bot_reply
 
@@ -836,6 +875,40 @@ def change_client_password(
     return {"message": "Password updated successfully"}
 
 
+@app.post("/api/knowledge/upload")
+async def upload_knowledge_file(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    record = await ingest_knowledge_file(db, business, file)
+    return {"message": "File uploaded successfully", "file": record}
+
+
+@app.get("/api/knowledge/list")
+def get_knowledge_files(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    files = list_knowledge_files(db, business.id)
+    return {"files": files}
+
+
+@app.delete("/api/knowledge/delete/{file_id}")
+def remove_knowledge_file(
+    file_id: int,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    return delete_knowledge_file(db, business, file_id)
+
+
 @app.get("/business/{business_id}")
 def get_business(
     business_id: str,
@@ -910,6 +983,8 @@ def business_chat(
         return {"response": "Monthly message limit reached. Please upgrade your plan."}
 
     data = load_business_data(req.business_id)
+    kb_context = retrieve_knowledge_context(db, business.id, req.message)
+    knowledge_section = kb_context or data["knowledge"]
 
     try:
         ai_response = client.chat.completions.create(
@@ -929,7 +1004,7 @@ Email: {data['profile']['contact_email']}
 Website: {data['profile']['website']}
 
 Knowledge Base:
-{data['knowledge']}
+{knowledge_section}
 """
                 },
                 {"role": "user", "content": req.message},

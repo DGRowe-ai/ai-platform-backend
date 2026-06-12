@@ -185,3 +185,36 @@ class ReportRun(Base):
     recipient = Column(String)
     status = Column(String, default="sent")
     notes = Column(Text, default="")
+
+
+# ============================
+# KNOWLEDGE BASE FILES
+# ============================
+class KnowledgeFile(Base):
+    __tablename__ = "knowledge_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("businesses.id"), index=True)
+    file_name = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    file_type = Column(String, nullable=False)
+    file_size = Column(Integer, default=0)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    embeddings = relationship(
+        "KnowledgeEmbedding",
+        back_populates="file",
+        cascade="all, delete-orphan",
+    )
+
+
+class KnowledgeEmbedding(Base):
+    __tablename__ = "knowledge_embeddings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("businesses.id"), index=True)
+    file_id = Column(Integer, ForeignKey("knowledge_files.id"), index=True)
+    chunk_text = Column(Text, nullable=False)
+    embedding_vector = Column(Text, nullable=False)
+
+    file = relationship("KnowledgeFile", back_populates="embeddings")
