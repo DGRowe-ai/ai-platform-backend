@@ -108,6 +108,7 @@ from knowledge_utils import (
 )
 from stripe_checkout_utils import (
     build_checkout_activation_url,
+    create_customer_portal_session,
     create_subscription_checkout_session,
     resolve_checkout_user,
 )
@@ -687,7 +688,16 @@ def get_client_business(db: Session, user: User):
         business = db.query(Business).filter(Business.owner_id == user.id).first()
 
     if not business:
-        raise HTTPException(status_code=404, detail="Business not found for this account")
+        business = db.query(Business).filter(Business.owner_id == user.id).first()
+
+    if not business:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No business is linked to this account. "
+                "Use your client business login, or contact support to link a business."
+            ),
+        )
 
     if user.role == "owner" and business.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -877,6 +887,17 @@ def change_client_password(
         raise HTTPException(status_code=500, detail="Unable to update password")
 
     return {"message": "Password updated successfully"}
+
+
+@app.post("/create-customer-portal-session")
+def create_customer_portal_session_endpoint(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if user.role != "owner" and not user_is_platform_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    portal_url = create_customer_portal_session(db, user)
+    return {"url": portal_url}
 
 
 @app.post("/api/knowledge/upload")

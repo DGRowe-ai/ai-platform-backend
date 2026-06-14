@@ -136,3 +136,34 @@ def create_subscription_checkout_session(db: Session, user: User) -> str:
         )
 
     return session.url
+
+
+def create_customer_portal_session(db: Session, user: User) -> str:
+    if not stripe.api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Stripe is not configured for billing portal",
+        )
+
+    customer_id = get_or_create_stripe_customer(db, user)
+    frontend_url = get_frontend_public_url()
+
+    try:
+        session = stripe.billingPortal.sessions.create(
+            customer=customer_id,
+            return_url=f"{frontend_url}/client-dashboard.html",
+        )
+    except stripe.error.StripeError as exc:
+        logger.exception("Stripe portal session failed for user_id=%s", user.id)
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to create Stripe billing portal session",
+        ) from exc
+
+    if not session.url:
+        raise HTTPException(
+            status_code=502,
+            detail="Stripe billing portal did not return a redirect URL",
+        )
+
+    return session.url
