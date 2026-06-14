@@ -9,8 +9,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from admin_analytics import get_admin_analytics
+from admin_business_ops import (
+    copy_knowledge_between_businesses,
+    run_rowe_website_owner_migration,
+    transfer_business_ownership,
+)
 from auth_utils import get_current_user, require_platform_admin
-from business_utils import delete_business_for_admin
+from business_utils import delete_business_for_admin, get_business_by_key
 from database import get_db
 from email_utils import REPORT_RECIPIENT, send_email, send_email_with_attachment
 from models import Business, Payment, ReportRun, User
@@ -36,6 +41,11 @@ class PaymentRequest(BaseModel):
     notes: str | None = None
     payment_type: str | None = None
     mark_paid: bool | None = None
+
+
+class TransferOwnerRequest(BaseModel):
+    owner_email: str
+    copy_knowledge_from_folder: str | None = None
 
 
 def _parse_date(value: str | None) -> datetime | None:
@@ -110,6 +120,46 @@ def admin_delete_business(
         raise HTTPException(status_code=500, detail="Unable to delete business")
 
     return result
+
+
+@router.post("/admin/businesses/{business_key}/transfer-owner")
+def admin_transfer_business_owner(
+    business_key: str,
+    req: TransferOwnerRequest,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_platform_admin(user)
+
+    try:
+        transfer_result = transfer_business_ownership(
+            db,
+            business_key,
+            req.owner_email,
+        )
+        knowledge_result = None
+        if req.copy_knowledge_from_folder:
+            source_business = get_business_by_key(db, req.copy_knowledge_from_folder)
+            target_business = get_business_by_key(db, business_key)
+            if not source_business or not target_business:
+                raise HTTPException(status_code=404, detail="Source or target business not found")
+            knowledge_result = copy_knowledge_between_businesses(
+                db,
+                source_business,
+                target_business,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error while transferring owner for business_key=%s", business_key)
+        raise HTTPException(status_code=500, detail="Unable to transfer business owner")
+
+    return {
+        "message": "Business owner updated",
+        "transfer": transfer_result,
+        "knowledge": knowledge_result,
+    }
 
 
 @router.get("/admin/businesses/{business_key}/payments")
@@ -323,3 +373,22 @@ def cron_daily_report(
     db.commit()
 
     return {"message": "Daily report sent", "recipient": recipient}
+
+
+@router.post("/internal/migrate/rowe-website-owner")
+def migrate_rowe_website_owner(
+    db: Session = Depends(get_db),
+    cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+):
+    expected = os.getenv("CRON_SECRET")
+    if not expected or cron_secret != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        return run_rowe_website_owner_migration(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error during Rowe website owner migration")
+        raise HTTPException(status_code=500, detail="Unable to run migration")
