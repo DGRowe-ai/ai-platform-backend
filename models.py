@@ -21,6 +21,7 @@ class User(Base):
 
     # Stripe billing
     stripe_customer_id = Column(String, nullable=True, index=True)
+    billing_status = Column(String, default="inactive")
 
     # Possible values: "admin", "owner", "user"
     role = Column(String, default="owner")
@@ -218,3 +219,19 @@ class KnowledgeEmbedding(Base):
     embedding_vector = Column(Text, nullable=False)
 
     file = relationship("KnowledgeFile", back_populates="embeddings")
+
+
+# ============================
+# BILLING CHECKOUT SESSIONS (pre-signup)
+# ============================
+class BillingCheckoutSession(Base):
+    __tablename__ = "billing_checkout_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stripe_session_id = Column(String, unique=True, index=True, nullable=False)
+    stripe_customer_id = Column(String, nullable=True, index=True)
+    stripe_subscription_id = Column(String, nullable=True)
+    customer_email = Column(String, nullable=True, index=True)
+    billing_status = Column(String, default="pending")
+    used = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)

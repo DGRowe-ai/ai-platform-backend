@@ -70,7 +70,7 @@ def get_cors_origins():
 # Database + models
 # -------------------------------------------------
 from database import Base, engine, SessionLocal, get_db
-from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding
+from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding, BillingCheckoutSession
 Base.metadata.create_all(bind=engine)
 
 # -------------------------------------------------
@@ -108,9 +108,14 @@ from knowledge_utils import (
 )
 from stripe_checkout_utils import (
     build_checkout_activation_url,
+    create_billing_first_checkout_session,
     create_customer_portal_session,
     create_subscription_checkout_session,
+    consume_checkout_session_for_signup,
+    get_frontend_public_url,
     resolve_checkout_user,
+    upsert_billing_checkout_session,
+    verify_checkout_session_for_registration,
 )
 
 # -------------------------------------------------
@@ -182,9 +187,38 @@ def ensure_user_stripe_schema():
                 text("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
             )
 
+        if "billing_status" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN billing_status TEXT DEFAULT 'inactive'")
+            )
+
+
+def ensure_billing_checkout_schema():
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS billing_checkout_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stripe_session_id TEXT UNIQUE NOT NULL,
+                    stripe_customer_id TEXT,
+                    stripe_subscription_id TEXT,
+                    customer_email TEXT,
+                    billing_status TEXT DEFAULT 'pending',
+                    used INTEGER DEFAULT 0,
+                    created_at TEXT
+                )
+                """
+            )
+        )
+
 
 ensure_business_settings_schema()
 ensure_user_stripe_schema()
+ensure_billing_checkout_schema()
 apply_admin_email_allowlist()
 
 # -------------------------------------------------
@@ -210,6 +244,7 @@ class SignupRequest(BaseModel):
     email: str
     password: str
     business_name: str
+    session_id: str
 
 class LoginRequest(BaseModel):
     email: str
@@ -444,7 +479,8 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
         email=req.email,
         password_hash=hash_password(req.password),
         role="owner",
-        subscription_active=True
+        subscription_active=0,
+        billing_status="inactive",
     )
     db.add(new_user)
     db.commit()
@@ -479,6 +515,21 @@ def resolve_business(db: Session, business_id):
     return db.query(Business).filter(Business.folder_name == business_key).first()
 
 
+def require_business_billing_active(db: Session, business: Business):
+    owner = db.query(User).filter(User.id == business.owner_id).first()
+    if not owner:
+        return
+
+    billing_status = (owner.billing_status or "inactive").strip().lower()
+    if billing_status == "active" or owner.subscription_active:
+        return
+
+    raise HTTPException(
+        status_code=402,
+        detail="Your chatbot is not activated yet. Please complete your billing setup.",
+    )
+
+
 def _execute_chat(
     business_id: str,
     message: str,
@@ -488,6 +539,8 @@ def _execute_chat(
     business = resolve_business(db, business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+
+    require_business_billing_active(db, business)
 
     settings = get_settings(business.id)
     faq_items = settings.get("faqs", [])
@@ -1112,6 +1165,8 @@ def get_current_admin(
 @app.post("/signup")
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
     email = normalize_email(req.email)
+    checkout_record = consume_checkout_session_for_signup(db, req.session_id, email)
+
     try:
         existing = db.query(User).filter(func.lower(User.email) == email).first()
     except SQLAlchemyError:
@@ -1126,16 +1181,22 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
         logger.warning("Completing interrupted signup for user_id=%s", user.id)
         user.password_hash = hash_password(req.password)
         user.role = user.role or "owner"
-        if user.subscription_active is None:
-            user.subscription_active = 0
+        user.billing_status = "active"
+        user.subscription_active = 1
     else:
         user = User(
             email=email,
             password_hash=hash_password(req.password),
-            subscription_active=0,
+            subscription_active=1,
+            billing_status="active",
             role="owner",
         )
         db.add(user)
+
+    if checkout_record.stripe_customer_id:
+        user.stripe_customer_id = checkout_record.stripe_customer_id
+    user.billing_status = "active"
+    user.subscription_active = 1
 
     try:
         db.flush()
@@ -1163,45 +1224,50 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     except Exception:
         logger.exception("Failed to write signup audit log for user_id=%s", user.id)
 
-    frontend_base = "https://ai-platform-frontend-uaaa.onrender.com"
-    chatbot_link = f"{frontend_base}/chat.html?b={user.business_id}"
-    checkout_link = build_checkout_activation_url(user.email)
-    embed_code = f"""
-    <!-- Rowe AI Chatbot -->
-    <script src="{frontend_base}/widget-frame.js?b={user.business_id}"></script>
-    """
+    frontend_base = get_frontend_public_url()
+    chatbot_link = f"{frontend_base}/chat.html?b={new_business.folder_name}"
+    test_dashboard_link = f"{frontend_base}/client-dashboard.html"
+    embed_code = f"""<script
+  src="{frontend_base}/widget.js"
+  data-business="{new_business.folder_name}"
+></script>"""
 
     email_body = f"""
-    Welcome to Rowe AI, {req.business_name}!
+Welcome to Rowe AI, {req.business_name}!
 
-    Your AI chatbot is now live and ready to use.
+Your AI chatbot is now live and ready to use.
 
-    ----------------------------------------
-    Your Chatbot Link (for testing)
-    ----------------------------------------
-    {chatbot_link}
+----------------------------------------
+Your Chatbot Link (for testing)
+----------------------------------------
+{chatbot_link}
 
-    ----------------------------------------
-    Your Website Embed Code
-    ----------------------------------------
-    Paste this code anywhere on your website's HTML to activate your chatbot:
+----------------------------------------
+Your Client Dashboard
+----------------------------------------
+{test_dashboard_link}
 
-    {embed_code}
+----------------------------------------
+Your Website Embed Code
+----------------------------------------
+Paste this code before </body> on your website:
 
-    ----------------------------------------
-    Activate Your Subscription
-    ----------------------------------------
-    To activate your subscription, complete your billing setup here:
-    {checkout_link}
+{embed_code}
 
-    ----------------------------------------
-    Need Help?
-    ----------------------------------------
-    If you need help installing the chatbot or customizing responses,
-    just reply to this email and we'll take care of you.
+----------------------------------------
+Billing
+----------------------------------------
+Your 30-day trial and subscription are managed directly on the Rowe AI website.
+Use Manage Subscription in your client dashboard to update payment details.
 
-    Thanks for choosing Rowe AI!
-    """
+----------------------------------------
+Need Help?
+----------------------------------------
+If you need help installing the chatbot or customizing responses,
+just reply to this email and we'll take care of you.
+
+Thanks for choosing Rowe AI!
+"""
 
     try:
         send_email(
@@ -1414,6 +1480,11 @@ def export_filtered(
 # -------------------------------------------------
 # Stripe Checkout
 # -------------------------------------------------
+@app.post("/create-checkout-session")
+def create_checkout_session_post():
+    return create_billing_first_checkout_session()
+
+
 @app.get("/create-checkout-session")
 def create_checkout_session(
     email: str | None = None,
@@ -1423,6 +1494,13 @@ def create_checkout_session(
     user = resolve_checkout_user(db, email=email, business_id=business_id)
     checkout_url = create_subscription_checkout_session(db, user)
     return RedirectResponse(url=checkout_url, status_code=303)
+
+
+@app.get("/verify-checkout-session")
+def verify_checkout_session(session_id: str, db: Session = Depends(get_db)):
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    return verify_checkout_session_for_registration(db, session_id)
 
 
 # -------------------------------------------------
@@ -1451,16 +1529,39 @@ async def stripe_webhook(
     data = event["data"]["object"]
 
     if event_type == "checkout.session.completed":
-        email = data.get("customer_email")
-        user = db.query(User).filter(User.email == email).first()
-        if user:
-            user.subscription_active = 1
-            db.commit()
-            log_event(
-                user_id=user.id,
-                event_type="subscription_activated",
-                description="Stripe checkout completed",
+        upsert_billing_checkout_session(db, data)
+        email = (
+            (data.get("customer_details") or {}).get("email")
+            or data.get("customer_email")
+        )
+        if email:
+            user = db.query(User).filter(
+                func.lower(User.email) == normalize_email(email)
+            ).first()
+            if user:
+                user.subscription_active = 1
+                user.billing_status = "active"
+                if data.get("customer"):
+                    user.stripe_customer_id = data.get("customer")
+                db.commit()
+                log_event(
+                    user_id=user.id,
+                    event_type="subscription_activated",
+                    description="Stripe checkout completed",
+                )
+
+    elif event_type == "customer.subscription.created":
+        customer_id = data.get("customer")
+        if customer_id:
+            user = (
+                db.query(User)
+                .filter(User.stripe_customer_id == customer_id)
+                .first()
             )
+            if user:
+                user.subscription_active = 1
+                user.billing_status = "active"
+                db.commit()
 
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")
@@ -1494,6 +1595,9 @@ async def stripe_webhook(
                 event_type="subscription_canceled",
                 description="Stripe reported subscription cancellation",
             )
+            user.subscription_active = 0
+            user.billing_status = "inactive"
+            db.commit()
             send_email(
                 to_email=user.email,
                 subject="Subscription Canceled",
