@@ -97,7 +97,7 @@ from business_utils import TEMPLATE_PATH, create_business_for_user
 # Audit + email + analytics utilities
 # -------------------------------------------------
 from audit_utils import log_event
-from email_utils import send_email
+from email_utils import send_email, send_admin_registration_notification
 from admin_analytics import get_admin_analytics
 from business_settings_utils import get_settings, update_settings
 from knowledge_utils import (
@@ -1163,7 +1163,7 @@ def get_current_admin(
     return current_user
 
 @app.post("/signup")
-def signup(req: SignupRequest, db: Session = Depends(get_db)):
+def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
     email = normalize_email(req.email)
     checkout_record = consume_checkout_session_for_signup(db, req.session_id, email)
 
@@ -1277,6 +1277,31 @@ Thanks for choosing Rowe AI!
         )
     except Exception:
         logger.exception("Failed to send signup email for user_id=%s", user.id)
+
+    billing_status = (user.billing_status or "inactive").strip().lower()
+    if billing_status == "active":
+        client_ip = None
+        if request.client:
+            client_ip = request.client.host
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+
+        try:
+            send_admin_registration_notification(
+                user_email=user.email,
+                business_name=req.business_name,
+                billing_status=user.billing_status or "active",
+                stripe_customer_id=user.stripe_customer_id,
+                registered_at=datetime.utcnow().isoformat() + "Z",
+                client_ip=client_ip,
+            )
+            logger.info("Admin notified of new registration: %s", user.email)
+        except Exception:
+            logger.exception(
+                "Failed to send admin registration notification for user_id=%s",
+                user.id,
+            )
 
     return {
         "message": "Signup successful",
