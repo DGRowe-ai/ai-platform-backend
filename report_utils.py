@@ -55,6 +55,8 @@ def _business_has_chat_activity(db: Session, business_id: int) -> bool:
 def _serialize_business_row(db: Session, business: Business) -> dict:
     owner = business.owner
     subscription_active = bool(owner.subscription_active) if owner else False
+    billing_status = (owner.billing_status or "inactive").strip().lower() if owner else "inactive"
+    service_suspended = billing_status == "suspended"
     last_payment = (
         db.query(Payment)
         .filter(Payment.business_id == business.id)
@@ -67,8 +69,12 @@ def _serialize_business_row(db: Session, business: Business) -> dict:
     ).count()
 
     payment_status = "paid" if subscription_active else "overdue"
-    if not subscription_active and not last_payment:
+    if service_suspended:
+        payment_status = "suspended"
+    if not subscription_active and not last_payment and not service_suspended:
         payment_status = "none"
+
+    status = "suspended" if service_suspended else ("active" if subscription_active else "inactive")
 
     return {
         "id": business.id,
@@ -78,7 +84,10 @@ def _serialize_business_row(db: Session, business: Business) -> dict:
         "name": business.name,
         "owner_email": owner.email if owner else None,
         "subscription_active": subscription_active,
-        "subscription_status": "active" if subscription_active else "inactive",
+        "billing_status": billing_status,
+        "service_suspended": service_suspended,
+        "status": status,
+        "subscription_status": status,
         "payment_status": payment_status,
         "created_at": None,
         "last_payment": last_payment.payment_date.isoformat() if last_payment else None,

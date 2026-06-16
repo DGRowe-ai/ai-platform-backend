@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 ROWE_ADMIN_EMAIL = "rowe-ai@outlook.com"
 ROWE_WEBSITE_FOLDER = "rowe_ai_website"
+PROTECTED_FROM_SUSPENSION = frozenset({"template", "rowe_ai", "rowe_ai_website"})
 
 
 def transfer_business_ownership(db, business_key: str, new_owner_email: str) -> dict:
@@ -288,4 +289,113 @@ def run_rowe_website_owner_migration(db) -> dict:
         "knowledge": knowledge_summary,
         "settings": settings_summary,
         "website_knowledge_file_count": file_count,
+    }
+
+
+def _get_business_owner(db, business: Business) -> User | None:
+    if not business.owner_id:
+        return None
+    return db.query(User).filter(User.id == business.owner_id).first()
+
+
+def is_business_suspended(owner: User | None) -> bool:
+    if not owner:
+        return False
+    return (owner.billing_status or "").strip().lower() == "suspended"
+
+
+def suspend_business_service(
+    db,
+    business_key: str,
+    *,
+    send_email: bool = True,
+) -> dict:
+    business = get_business_by_key(db, business_key)
+    if not business:
+        raise ValueError(f"Business not found: {business_key}")
+
+    if business.folder_name in PROTECTED_FROM_SUSPENSION:
+        raise ValueError(f"Cannot suspend protected business: {business.folder_name}")
+
+    owner = _get_business_owner(db, business)
+    if not owner:
+        raise ValueError("Business has no owner to suspend")
+
+    if is_business_suspended(owner):
+        return {
+            "message": "Business already suspended",
+            "business_id": business.folder_name,
+            "owner_email": owner.email,
+            "billing_status": owner.billing_status,
+            "email_sent": False,
+        }
+
+    owner.billing_status = "suspended"
+    owner.subscription_active = 0
+    db.add(owner)
+    db.commit()
+    db.refresh(owner)
+
+    email_sent = False
+    if send_email:
+        from audit_utils import log_event
+        from email_utils import send_service_suspension_email
+
+        try:
+            send_service_suspension_email(
+                to_email=owner.email,
+                business_name=business.name,
+            )
+            email_sent = True
+            log_event(
+                user_id=owner.id,
+                event_type="service_suspended",
+                description=f"Admin suspended chatbot service for {business.folder_name}",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send suspension email for business_key=%s owner_id=%s",
+                business.folder_name,
+                owner.id,
+            )
+
+    return {
+        "message": "Business service suspended",
+        "business_id": business.folder_name,
+        "business_name": business.name,
+        "owner_email": owner.email,
+        "billing_status": owner.billing_status,
+        "email_sent": email_sent,
+    }
+
+
+def reactivate_business_service(db, business_key: str) -> dict:
+    business = get_business_by_key(db, business_key)
+    if not business:
+        raise ValueError(f"Business not found: {business_key}")
+
+    owner = _get_business_owner(db, business)
+    if not owner:
+        raise ValueError("Business has no owner to reactivate")
+
+    owner.billing_status = "active"
+    owner.subscription_active = 1
+    db.add(owner)
+    db.commit()
+    db.refresh(owner)
+
+    from audit_utils import log_event
+
+    log_event(
+        user_id=owner.id,
+        event_type="service_reactivated",
+        description=f"Admin reactivated chatbot service for {business.folder_name}",
+    )
+
+    return {
+        "message": "Business service reactivated",
+        "business_id": business.folder_name,
+        "business_name": business.name,
+        "owner_email": owner.email,
+        "billing_status": owner.billing_status,
     }

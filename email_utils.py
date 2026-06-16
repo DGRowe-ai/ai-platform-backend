@@ -64,6 +64,49 @@ Registered At: {timestamp}
     )
 
 
+def get_client_dashboard_url() -> str:
+    frontend_url = (
+        os.getenv("FRONTEND_PUBLIC_URL")
+        or os.getenv("PUBLIC_FRONTEND_URL")
+        or "https://ai-platform-frontend-uaaa.onrender.com"
+    ).rstrip("/")
+    return f"{frontend_url}/client-dashboard.html"
+
+
+def send_service_suspension_email(
+    *,
+    to_email: str,
+    business_name: str,
+    dashboard_url: str | None = None,
+) -> None:
+    manage_url = dashboard_url or get_client_dashboard_url()
+    body = f"""Hello,
+
+We were unable to confirm payment for your Rowe AI subscription, so the chatbot for {business_name} has been temporarily suspended.
+
+While your account is suspended:
+- Your website chatbot will not respond to visitors
+- Your chatbot service is offline until billing is updated
+
+To reactivate your chatbot, sign in to your client dashboard and update your payment details using Manage Subscription:
+
+{manage_url}
+
+Once your payment is up to date, your chatbot will be restored.
+
+If you believe this is an error or need help, reply to this email and our team will assist you.
+
+Thank you,
+Rowe AI Support
+"""
+
+    send_email(
+        to_email=to_email,
+        subject="Your Rowe AI Chatbot Has Been Suspended",
+        body=body,
+    )
+
+
 def send_email_with_attachment(to_email, subject, body, attachment_bytes, attachment_filename, mime_type="application/pdf"):
     msg = MIMEMultipart()
     msg["Subject"] = subject

@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from admin_analytics import get_admin_analytics
 from admin_business_ops import (
     copy_knowledge_between_businesses,
+    reactivate_business_service,
     run_rowe_website_owner_migration,
+    suspend_business_service,
     transfer_business_ownership,
 )
 from auth_utils import get_current_user, require_platform_admin
@@ -46,6 +48,10 @@ class PaymentRequest(BaseModel):
 class TransferOwnerRequest(BaseModel):
     owner_email: str
     copy_knowledge_from_folder: str | None = None
+
+
+class SuspendBusinessRequest(BaseModel):
+    send_email: bool = True
 
 
 def _parse_date(value: str | None) -> datetime | None:
@@ -194,6 +200,7 @@ def record_business_payment(
 
     if req.mark_paid and owner:
         owner.subscription_active = 1
+        owner.billing_status = "active"
 
     amount = req.amount if req.amount is not None else 29.99
     payment_date = _parse_date(req.payment_date) or datetime.utcnow()
@@ -217,6 +224,52 @@ def record_business_payment(
         "message": "Payment recorded",
         "payment": _serialize_payment(payment, business),
     }
+
+
+@router.post("/admin/businesses/{business_key}/suspend")
+def admin_suspend_business(
+    business_key: str,
+    req: SuspendBusinessRequest | None = None,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_platform_admin(user)
+    payload = req or SuspendBusinessRequest()
+
+    try:
+        result = suspend_business_service(
+            db,
+            business_key,
+            send_email=payload.send_email,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error while suspending business_key=%s", business_key)
+        raise HTTPException(status_code=500, detail="Unable to suspend business service")
+
+    return result
+
+
+@router.post("/admin/businesses/{business_key}/reactivate")
+def admin_reactivate_business(
+    business_key: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_platform_admin(user)
+
+    try:
+        result = reactivate_business_service(db, business_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database error while reactivating business_key=%s", business_key)
+        raise HTTPException(status_code=500, detail="Unable to reactivate business service")
+
+    return result
 
 
 @router.get("/admin/reports/daily-preview")

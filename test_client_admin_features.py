@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 TEST_DB = Path(tempfile.gettempdir()) / "client_admin_features_test.db"
@@ -110,6 +111,39 @@ class ClientAdminFeatureTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_suspend_and_reactivate_business(self):
+        folder_name = self.client_business.folder_name
+        login_response = self.login("admin@example.com")
+        headers = self.auth_headers(login_response["access_token"])
+
+        with unittest.mock.patch("email_utils.send_service_suspension_email"):
+            suspend_response = self.client.post(
+                f"/admin/businesses/{folder_name}/suspend",
+                headers=headers,
+                json={"send_email": True},
+            )
+
+        self.assertEqual(suspend_response.status_code, 200)
+        self.db.refresh(self.client_user)
+        self.assertEqual(self.client_user.billing_status, "suspended")
+        self.assertEqual(self.client_user.subscription_active, 0)
+
+        chat_response = self.client.post(
+            "/business/chat",
+            json={"business_id": folder_name, "message": "hello"},
+        )
+        self.assertEqual(chat_response.status_code, 402)
+        self.assertIn("suspended", chat_response.json()["detail"].lower())
+
+        reactivate_response = self.client.post(
+            f"/admin/businesses/{folder_name}/reactivate",
+            headers=headers,
+        )
+        self.assertEqual(reactivate_response.status_code, 200)
+        self.db.refresh(self.client_user)
+        self.assertEqual(self.client_user.billing_status, "active")
+        self.assertEqual(self.client_user.subscription_active, 1)
 
 
 if __name__ == "__main__":

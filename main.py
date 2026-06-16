@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "chat-billing-fix-2026-06-16-1"
+DEPLOYMENT_VERSION = "admin-service-suspension-2026-06-16-1"
 
 # -------------------------------------------------
 # Load environment
@@ -372,6 +372,12 @@ def get_business_summaries_for_user(
 # Guards
 # -------------------------------------------------
 def require_subscription(user: User = Depends(get_current_user)):
+    billing_status = (user.billing_status or "inactive").strip().lower()
+    if billing_status == "suspended":
+        raise HTTPException(
+            status_code=402,
+            detail="Your account is suspended due to non-payment. Please update your billing to reactivate.",
+        )
     if not user.subscription_active:
         raise HTTPException(status_code=402, detail="Subscription required")
     return user
@@ -564,10 +570,19 @@ def require_business_billing_active(db: Session, business: Business):
     if not owner:
         return
 
+    billing_status = (owner.billing_status or "inactive").strip().lower()
+    if billing_status == "suspended":
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                "This chatbot has been suspended due to non-payment. "
+                "Please update your billing to reactivate."
+            ),
+        )
+
     if user_is_platform_admin(owner):
         return
 
-    billing_status = (owner.billing_status or "inactive").strip().lower()
     if billing_status == "active" or owner.subscription_active:
         return
 
