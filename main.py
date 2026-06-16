@@ -553,7 +553,13 @@ def resolve_business(db: Session, business_id):
     return db.query(Business).filter(Business.folder_name == business_key).first()
 
 
+DEMO_BUSINESS_FOLDERS = frozenset({"rowe_ai", "rowe_ai_website"})
+
+
 def require_business_billing_active(db: Session, business: Business):
+    if business.folder_name in DEMO_BUSINESS_FOLDERS:
+        return
+
     owner = db.query(User).filter(User.id == business.owner_id).first()
     if not owner:
         return
