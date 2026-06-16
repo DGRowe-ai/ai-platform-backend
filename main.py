@@ -149,6 +149,43 @@ def apply_admin_email_allowlist():
     logger.info("Loaded %s platform admin email(s) from ADMIN_EMAILS", len(admin_emails))
 
 
+def backfill_billing_for_legacy_accounts():
+    """Activate billing flags for admins and existing Stripe customers."""
+    db = SessionLocal()
+    try:
+        updated = 0
+        users = db.query(User).all()
+
+        for user in users:
+            should_activate = (
+                user_is_platform_admin(user)
+                or user.subscription_active
+                or bool(user.stripe_customer_id)
+            )
+            if not should_activate:
+                continue
+
+            changed = False
+            if (user.billing_status or "").strip().lower() != "active":
+                user.billing_status = "active"
+                changed = True
+            if not user.subscription_active:
+                user.subscription_active = 1
+                changed = True
+            if changed:
+                updated += 1
+                db.add(user)
+
+        if updated:
+            db.commit()
+            logger.info("Backfilled active billing for %s user(s)", updated)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Failed to backfill billing status for legacy accounts")
+    finally:
+        db.close()
+
+
 def ensure_business_settings_schema():
     if engine.dialect.name != "sqlite":
         return
@@ -220,6 +257,7 @@ ensure_business_settings_schema()
 ensure_user_stripe_schema()
 ensure_billing_checkout_schema()
 apply_admin_email_allowlist()
+backfill_billing_for_legacy_accounts()
 
 # -------------------------------------------------
 # Request models
@@ -520,8 +558,14 @@ def require_business_billing_active(db: Session, business: Business):
     if not owner:
         return
 
+    if user_is_platform_admin(owner):
+        return
+
     billing_status = (owner.billing_status or "inactive").strip().lower()
     if billing_status == "active" or owner.subscription_active:
+        return
+
+    if owner.stripe_customer_id:
         return
 
     raise HTTPException(

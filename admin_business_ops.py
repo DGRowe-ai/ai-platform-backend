@@ -223,6 +223,13 @@ def run_rowe_website_owner_migration(db) -> dict:
         ROWE_ADMIN_EMAIL,
     )
 
+    admin_owner = db.query(User).filter(User.email == ROWE_ADMIN_EMAIL).first()
+    if admin_owner:
+        admin_owner.billing_status = "active"
+        admin_owner.subscription_active = 1
+        db.add(admin_owner)
+        db.commit()
+
     knowledge_summary = {
         "copied_files": 0,
         "skipped_files": 0,
