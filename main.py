@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "stripe-checkout-onboarding-2026-06-11-1"
+DEPLOYMENT_VERSION = "chat-billing-fix-2026-06-16-1"
 
 # -------------------------------------------------
 # Load environment
