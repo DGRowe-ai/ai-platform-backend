@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "instant-demo-api-2026-06-16-1"
+DEPLOYMENT_VERSION = "instant-demo-cors-fix-2026-06-18-1"
 
 # -------------------------------------------------
 # Load environment
@@ -61,12 +61,20 @@ DEFAULT_CORS_ORIGINS = [
 
 def get_cors_origins():
     configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
-    origins = [
+    configured = [
         origin.strip().rstrip("/")
         for origin in configured_origins.split(",")
         if origin.strip()
     ]
-    return origins or DEFAULT_CORS_ORIGINS
+    # Merge env-configured origins with defaults so marketing/local dev origins
+    # are not dropped when CORS_ALLOWED_ORIGINS is set on Render.
+    merged: list[str] = []
+    seen: set[str] = set()
+    for origin in [*configured, *DEFAULT_CORS_ORIGINS]:
+        if origin and origin not in seen:
+            seen.add(origin)
+            merged.append(origin)
+    return merged
 
 # -------------------------------------------------
 # Database + models
