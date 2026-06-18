@@ -12,3 +12,5 @@ reportlab
 pypdf
 python-docx
 python-multipart
+httpx
+beautifulsoup4

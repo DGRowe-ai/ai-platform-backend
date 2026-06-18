@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "admin-service-suspension-2026-06-16-1"
+DEPLOYMENT_VERSION = "instant-demo-api-2026-06-16-1"
 
 # -------------------------------------------------
 # Load environment
@@ -48,6 +48,8 @@ app = FastAPI(docs_url="/docs", redoc_url="/redoc")
 # -------------------------------------------------
 DEFAULT_CORS_ORIGINS = [
     "https://ai-platform-frontend-uaaa.onrender.com",
+    "https://roweai.ca",
+    "https://www.roweai.ca",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
@@ -537,8 +539,10 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 # -------------------------------------------------
 from admin_routes import router as admin_router
 from business_settings_routes import router as business_settings_router
+from demo_routes import router as demo_router
 app.include_router(admin_router)
 app.include_router(business_settings_router)
+app.include_router(demo_router)
 
 # -------------------------------------------------
 # SHARED CHAT EXECUTION HELPER
