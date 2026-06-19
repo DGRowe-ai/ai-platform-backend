@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "referral-system-2026-06-19-1"
+DEPLOYMENT_VERSION = "account-deletion-2026-06-19-1"
 
 # -------------------------------------------------
 # Load environment
@@ -653,10 +653,12 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 # -------------------------------------------------
 from admin_routes import router as admin_router
 from auth_routes import router as auth_router
+from account_routes import router as account_router
 from business_settings_routes import router as business_settings_router
 from demo_routes import router as demo_router
 app.include_router(admin_router)
 app.include_router(auth_router)
+app.include_router(account_router)
 app.include_router(business_settings_router)
 app.include_router(demo_router)
 

@@ -266,6 +266,62 @@ Rowe AI Support
     )
 
 
+def send_account_deleted_user_email(*, to_email: str) -> None:
+    body = """Hello,
+
+This confirms that your Rowe AI account and subscription have been permanently deleted.
+
+All associated chatbot data, settings, and account information have been removed from our system.
+
+Thank you for trying Rowe AI. We are sorry to see you go, and you are welcome back anytime.
+
+Rowe AI Support
+"""
+
+    send_email(
+        to_email=to_email,
+        subject="Your Rowe AI Account Has Been Deleted",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
+    )
+
+
+def send_account_deleted_admin_email(
+    *,
+    user_email: str,
+    business_names: list[str],
+    deleted_at: str,
+    subscription_canceled: bool,
+    referral_code: str | None = None,
+    referral_count: int = 0,
+    free_months_earned: int = 0,
+) -> None:
+    business_line = ", ".join(business_names) if business_names else "None"
+    referral_line = referral_code or "None"
+
+    body = f"""A user deleted their Rowe AI account from the client dashboard.
+
+User email: {user_email}
+Business name(s): {business_line}
+Date/time: {deleted_at}
+Stripe subscription canceled: {"Yes" if subscription_canceled else "No"}
+
+Referral data removed:
+- Referral code: {referral_line}
+- Successful referrals: {referral_count}
+- Free months earned: {free_months_earned}
+
+Rowe AI System
+"""
+
+    send_email(
+        to_email=REFERRAL_ADMIN_EMAIL,
+        subject="User Account Deleted",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
+    )
+
+
 def send_admin_referral_conversion_email(
     *,
     referrer_name: str,
