@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "password-reset-2026-06-18-1"
+DEPLOYMENT_VERSION = "referral-system-2026-06-19-1"
 
 # -------------------------------------------------
 # Load environment
@@ -107,7 +107,14 @@ from business_utils import TEMPLATE_PATH, create_business_for_user
 # Audit + email + analytics utilities
 # -------------------------------------------------
 from audit_utils import log_event
-from email_utils import send_email, send_admin_registration_notification
+from email_utils import (
+    send_email,
+    send_admin_registration_notification,
+    send_admin_referral_conversion_email,
+    send_referral_reward_email,
+    send_referred_user_welcome_email,
+    send_welcome_email_with_referral,
+)
 from admin_analytics import get_admin_analytics
 from business_settings_utils import get_settings, update_settings
 from knowledge_utils import (
@@ -126,6 +133,13 @@ from stripe_checkout_utils import (
     resolve_checkout_user,
     upsert_billing_checkout_session,
     verify_checkout_session_for_registration,
+)
+from referral_utils import (
+    apply_referral_on_signup,
+    build_referral_link,
+    ensure_user_referral_code,
+    get_referral_stats,
+    process_referral_conversion,
 )
 
 # -------------------------------------------------
@@ -249,9 +263,81 @@ def ensure_user_stripe_schema():
                 text("ALTER TABLE users ADD COLUMN password_reset_expires_at TEXT")
             )
 
+        if "referral_code" not in columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN referral_code TEXT"))
+
+        if "referred_by_user_id" not in columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN referred_by_user_id INTEGER"))
+
+        if "referral_count" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN referral_count INTEGER DEFAULT 0")
+            )
+
+        if "free_months_earned" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN free_months_earned INTEGER DEFAULT 0")
+            )
+
+        if "referral_conversion_rewarded" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE users ADD COLUMN referral_conversion_rewarded INTEGER DEFAULT 0"
+                )
+            )
+
 
 def ensure_user_password_reset_schema():
     ensure_user_stripe_schema()
+
+
+def ensure_referral_schema():
+    ensure_user_password_reset_schema()
+
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        checkout_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(billing_checkout_sessions)"))
+        }
+        if "referral_code" not in checkout_columns:
+            connection.execute(
+                text("ALTER TABLE billing_checkout_sessions ADD COLUMN referral_code TEXT")
+            )
+
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS referral_signup_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ip_address TEXT,
+                    referral_code TEXT,
+                    referrer_user_id INTEGER,
+                    referred_user_id INTEGER,
+                    created_at TEXT
+                )
+                """
+            )
+        )
+
+
+def backfill_referral_codes():
+    db = SessionLocal()
+    try:
+        users = db.query(User).filter(User.referral_code.is_(None)).all()
+        updated = 0
+        for user in users:
+            ensure_user_referral_code(db, user)
+            updated += 1
+        if updated:
+            logger.info("Backfilled referral codes for %s user(s)", updated)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Failed to backfill referral codes")
+    finally:
+        db.close()
 
 
 def ensure_billing_checkout_schema():
@@ -279,9 +365,11 @@ def ensure_billing_checkout_schema():
 
 ensure_business_settings_schema()
 ensure_user_password_reset_schema()
+ensure_referral_schema()
 ensure_billing_checkout_schema()
 apply_admin_email_allowlist()
 backfill_billing_for_legacy_accounts()
+backfill_referral_codes()
 
 # -------------------------------------------------
 # Request models
@@ -307,6 +395,10 @@ class SignupRequest(BaseModel):
     password: str
     business_name: str
     session_id: str
+    referral_code: str | None = None
+
+class CreateCheckoutSessionRequest(BaseModel):
+    referral_code: str | None = None
 
 class LoginRequest(BaseModel):
     email: str
@@ -1035,6 +1127,15 @@ def change_client_password(
     return {"message": "Password updated successfully"}
 
 
+@app.get("/client/referral-stats")
+def client_referral_stats(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner"])
+    return get_referral_stats(db, user)
+
+
 @app.post("/create-customer-portal-session")
 def create_customer_portal_session_endpoint(
     user=Depends(get_current_user),
@@ -1295,6 +1396,23 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
         db.flush()
         new_business = create_business_for_user(db, user, req.business_name)
         user.business_id = new_business.id
+
+        referral_code = req.referral_code or checkout_record.referral_code
+        client_ip = None
+        if request.client:
+            client_ip = request.client.host
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+
+        referrer = apply_referral_on_signup(
+            db,
+            new_user=user,
+            referral_code=referral_code,
+            signup_ip=client_ip,
+        )
+        ensure_user_referral_code(db, user)
+
         db.commit()
         db.refresh(user)
     except HTTPException:
@@ -1324,52 +1442,34 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
   src="{frontend_base}/widget.js"
   data-business="{new_business.folder_name}"
 ></script>"""
-
-    email_body = f"""
-Welcome to Rowe AI, {req.business_name}!
-
-Your AI chatbot is now live and ready to use.
-
-----------------------------------------
-Your Chatbot Link (for testing)
-----------------------------------------
-{chatbot_link}
-
-----------------------------------------
-Your Client Dashboard
-----------------------------------------
-{test_dashboard_link}
-
-----------------------------------------
-Your Website Embed Code
-----------------------------------------
-Paste this code before </body> on your website:
-
-{embed_code}
-
-----------------------------------------
-Billing
-----------------------------------------
-Your 30-day trial and subscription are managed directly on the Rowe AI website.
-Use Manage Subscription in your client dashboard to update payment details.
-
-----------------------------------------
-Need Help?
-----------------------------------------
-If you need help installing the chatbot or customizing responses,
-just reply to this email and we'll take care of you.
-
-Thanks for choosing Rowe AI!
-"""
+    referral_link = build_referral_link(user.referral_code)
 
     try:
-        send_email(
+        send_welcome_email_with_referral(
             to_email=user.email,
-            subject=f"Your Rowe AI Chatbot Is Ready, {req.business_name}!",
-            body=email_body,
+            business_name=req.business_name,
+            chatbot_link=chatbot_link,
+            dashboard_link=test_dashboard_link,
+            embed_code=embed_code,
+            referral_link=referral_link,
         )
     except Exception:
         logger.exception("Failed to send signup email for user_id=%s", user.id)
+
+    if referrer:
+        try:
+            from referral_utils import get_referrer_display_name
+
+            send_referred_user_welcome_email(
+                to_email=user.email,
+                business_name=req.business_name,
+                referrer_name=get_referrer_display_name(db, referrer),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send referred-user welcome email for user_id=%s",
+                user.id,
+            )
 
     billing_status = (user.billing_status or "inactive").strip().lower()
     if billing_status == "active":
@@ -1399,6 +1499,7 @@ Thanks for choosing Rowe AI!
     return {
         "message": "Signup successful",
         "business_id": new_business.folder_name,
+        "referral_link": referral_link,
     }
 
 @app.post("/admin/create_business_for_existing_user")
@@ -1599,8 +1700,9 @@ def export_filtered(
 # Stripe Checkout
 # -------------------------------------------------
 @app.post("/create-checkout-session")
-def create_checkout_session_post():
-    return create_billing_first_checkout_session()
+def create_checkout_session_post(req: CreateCheckoutSessionRequest | None = None):
+    referral_code = req.referral_code if req else None
+    return create_billing_first_checkout_session(referral_code=referral_code)
 
 
 @app.get("/create-checkout-session")
@@ -1680,6 +1782,65 @@ async def stripe_webhook(
                 user.subscription_active = 1
                 user.billing_status = "active"
                 db.commit()
+
+    elif event_type == "invoice.payment_succeeded":
+        customer_id = data.get("customer")
+        amount_paid = int(data.get("amount_paid") or 0)
+        if customer_id and amount_paid > 0:
+            user = (
+                db.query(User)
+                .filter(User.stripe_customer_id == customer_id)
+                .first()
+            )
+            if user:
+                conversion = process_referral_conversion(
+                    db,
+                    user,
+                    invoice_id=data.get("id"),
+                )
+                if conversion:
+                    referrer = conversion["referrer"]
+                    referred_user = conversion["referred_user"]
+                    updated_renewal = conversion.get("updated_renewal")
+                    renewal_text = (
+                        updated_renewal.strftime("%B %d, %Y")
+                        if updated_renewal
+                        else None
+                    )
+                    referral_link = build_referral_link(referrer.referral_code or "")
+
+                    try:
+                        send_referral_reward_email(
+                            to_email=referrer.email,
+                            referral_link=referral_link,
+                            updated_renewal_date=renewal_text,
+                            successful_referrals=int(referrer.referral_count or 0),
+                            free_months_earned=int(referrer.free_months_earned or 0),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to send referral reward email referrer_id=%s",
+                            referrer.id,
+                        )
+
+                    try:
+                        send_admin_referral_conversion_email(
+                            referrer_name=conversion["referrer_name"],
+                            referrer_email=referrer.email,
+                            referred_name=conversion["referred_name"],
+                            referred_email=referred_user.email,
+                            converted_at=datetime.utcnow().isoformat() + "Z",
+                        )
+                    except Exception:
+                        logger.exception("Failed to send admin referral conversion email")
+
+                    log_event(
+                        user_id=referrer.id,
+                        event_type="referral_reward_granted",
+                        description=(
+                            f"Referral conversion rewarded for referred_user_id={referred_user.id}"
+                        ),
+                    )
 
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")

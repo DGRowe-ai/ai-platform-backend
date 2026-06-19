@@ -27,6 +27,13 @@ class User(Base):
     password_reset_token_hash = Column(String, nullable=True, index=True)
     password_reset_expires_at = Column(DateTime, nullable=True)
 
+    # Referral program
+    referral_code = Column(String, unique=True, nullable=True, index=True)
+    referred_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    referral_count = Column(Integer, default=0)
+    free_months_earned = Column(Integer, default=0)
+    referral_conversion_rewarded = Column(Integer, default=0)
+
     # Possible values: "admin", "owner", "user"
     role = Column(String, default="owner")
 
@@ -238,4 +245,19 @@ class BillingCheckoutSession(Base):
     customer_email = Column(String, nullable=True, index=True)
     billing_status = Column(String, default="pending")
     used = Column(Integer, default=0)
+    referral_code = Column(String, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ============================
+# REFERRAL SIGNUP LOG (abuse prevention)
+# ============================
+class ReferralSignupLog(Base):
+    __tablename__ = "referral_signup_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ip_address = Column(String, nullable=True, index=True)
+    referral_code = Column(String, nullable=True, index=True)
+    referrer_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    referred_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -140,6 +140,10 @@ def upsert_billing_checkout_session(db: Session, session: dict) -> BillingChecko
     record.stripe_subscription_id = session.get("subscription") or record.stripe_subscription_id
     record.customer_email = _extract_checkout_email(session) or record.customer_email
     record.billing_status = "active"
+    metadata = session.get("metadata") or {}
+    referral_code = metadata.get("referral_code")
+    if referral_code:
+        record.referral_code = referral_code.strip()
     if not record.created_at:
         record.created_at = datetime.utcnow()
 
@@ -148,7 +152,7 @@ def upsert_billing_checkout_session(db: Session, session: dict) -> BillingChecko
     return record
 
 
-def create_billing_first_checkout_session() -> dict:
+def create_billing_first_checkout_session(referral_code: str | None = None) -> dict:
     if not stripe.api_key:
         raise HTTPException(
             status_code=503,
@@ -159,11 +163,16 @@ def create_billing_first_checkout_session() -> dict:
     price_id = get_stripe_price_id()
     trial_days = get_trial_period_days()
 
+    metadata = {}
+    if referral_code:
+        metadata["referral_code"] = referral_code.strip()
+
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
             line_items=[{"price": price_id, "quantity": 1}],
             subscription_data={"trial_period_days": trial_days},
+            metadata=metadata or None,
             success_url=f"{frontend_url}/register.html?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{frontend_url}/billing.html",
         )

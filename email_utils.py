@@ -20,6 +20,10 @@ ADMIN_REGISTRATION_EMAIL = os.getenv(
 )
 PASSWORD_RESET_SENDER = os.getenv("PASSWORD_RESET_SENDER", "support@roweai.ca")
 PASSWORD_RESET_BASE_URL = os.getenv("PASSWORD_RESET_BASE_URL", "https://roweai.ca").rstrip("/")
+REFERRAL_ADMIN_EMAIL = os.getenv(
+    "REFERRAL_ADMIN_EMAIL",
+    os.getenv("ADMIN_REGISTRATION_EMAIL", "daryl_rowe@hotmail.com"),
+)
 
 
 def send_email(to_email, subject, body, from_email=None):
@@ -132,6 +136,166 @@ Rowe AI Support
     send_email(
         to_email=to_email,
         subject="Reset Your Rowe AI Password",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
+    )
+
+
+def send_welcome_email_with_referral(
+    *,
+    to_email: str,
+    business_name: str,
+    chatbot_link: str,
+    dashboard_link: str,
+    embed_code: str,
+    referral_link: str,
+) -> None:
+    body = f"""Welcome to Rowe AI, {business_name}!
+
+Your AI chatbot is now live and ready to use.
+
+----------------------------------------
+Your Chatbot Link (for testing)
+----------------------------------------
+{chatbot_link}
+
+----------------------------------------
+Your Client Dashboard
+----------------------------------------
+{dashboard_link}
+
+----------------------------------------
+Your Website Embed Code
+----------------------------------------
+Paste this code before </body> on your website:
+
+{embed_code}
+
+----------------------------------------
+Share Rowe AI and Earn Free Months
+----------------------------------------
+Love Rowe AI? Share your personal referral link with another business.
+When they become a paying customer, you earn 1 free month added to your subscription.
+
+Your referral link:
+{referral_link}
+
+----------------------------------------
+Billing
+----------------------------------------
+Your 30-day trial and subscription are managed directly on the Rowe AI website.
+Use Manage Subscription in your client dashboard to update payment details.
+
+----------------------------------------
+Need Help?
+----------------------------------------
+If you need help installing the chatbot or customizing responses,
+just reply to this email and we'll take care of you.
+
+Thanks for choosing Rowe AI!
+"""
+
+    send_email(
+        to_email=to_email,
+        subject="Welcome to Rowe AI — Here's Your Referral Link",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
+    )
+
+
+def send_referred_user_welcome_email(
+    *,
+    to_email: str,
+    business_name: str,
+    referrer_name: str,
+) -> None:
+    body = f"""Welcome to Rowe AI, {business_name}!
+
+You were referred by {referrer_name}. They earned a free month for helping you join Rowe AI.
+
+Your chatbot is ready to set up in your client dashboard. If you need help getting started, just reply to this email.
+
+Thank you for choosing Rowe AI!
+"""
+
+    send_email(
+        to_email=to_email,
+        subject="Welcome to Rowe AI",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
+    )
+
+
+def send_referral_reward_email(
+    *,
+    to_email: str,
+    referral_link: str,
+    updated_renewal_date: str | None = None,
+    successful_referrals: int = 0,
+    free_months_earned: int = 0,
+) -> None:
+    renewal_line = (
+        f"Your updated renewal date is {updated_renewal_date}."
+        if updated_renewal_date
+        else "Your subscription has been extended by 30 days."
+    )
+
+    body = f"""Congratulations!
+
+You earned a free month of Rowe AI because a business you referred became a paying customer.
+
+{renewal_line}
+
+Your referral stats:
+- Successful referrals: {successful_referrals}
+- Free months earned: {free_months_earned}
+
+Keep sharing your referral link to earn more free months:
+{referral_link}
+
+Thank you for helping grow the Rowe AI community!
+
+Rowe AI Support
+"""
+
+    send_email(
+        to_email=to_email,
+        subject="You Earned a Free Month of Rowe AI!",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
+    )
+
+
+def send_admin_referral_conversion_email(
+    *,
+    referrer_name: str,
+    referrer_email: str,
+    referred_name: str,
+    referred_email: str,
+    converted_at: str,
+) -> None:
+    body = f"""A referral conversion was processed automatically.
+
+Referrer:
+- Name: {referrer_name}
+- Email: {referrer_email}
+
+New customer:
+- Name: {referred_name}
+- Email: {referred_email}
+
+Date/time: {converted_at}
+
+Action taken:
+- 30-day subscription extension applied to the referrer
+- Referral reward emails sent
+
+Rowe AI System
+"""
+
+    send_email(
+        to_email=REFERRAL_ADMIN_EMAIL,
+        subject="New Referral Conversion",
         body=body,
         from_email=PASSWORD_RESET_SENDER,
     )
