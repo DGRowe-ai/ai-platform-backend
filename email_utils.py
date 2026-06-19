@@ -18,18 +18,21 @@ ADMIN_REGISTRATION_EMAIL = os.getenv(
     "ADMIN_REGISTRATION_EMAIL",
     os.getenv("REPORT_RECIPIENT", "daryl_rowe@hotmail.com"),
 )
+PASSWORD_RESET_SENDER = os.getenv("PASSWORD_RESET_SENDER", "support@roweai.ca")
+PASSWORD_RESET_BASE_URL = os.getenv("PASSWORD_RESET_BASE_URL", "https://roweai.ca").rstrip("/")
 
 
-def send_email(to_email, subject, body):
+def send_email(to_email, subject, body, from_email=None):
+    sender = from_email or VERIFIED_SENDER
     msg = MIMEText(body)
     msg["Subject"] = subject
-    msg["From"] = VERIFIED_SENDER
+    msg["From"] = sender
     msg["To"] = to_email
 
     server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
     server.starttls()
     server.login(SMTP_USER, SMTP_PASSWORD)
-    server.sendmail(VERIFIED_SENDER, to_email, msg.as_string())
+    server.sendmail(sender, to_email, msg.as_string())
     server.quit()
 
 
@@ -104,6 +107,33 @@ Rowe AI Support
         to_email=to_email,
         subject="Your Rowe AI Chatbot Has Been Suspended",
         body=body,
+    )
+
+
+def get_password_reset_url(reset_token: str) -> str:
+    return f"{PASSWORD_RESET_BASE_URL}/reset-password?token={reset_token}"
+
+
+def send_password_reset_email(*, to_email: str, reset_token: str) -> None:
+    reset_url = get_password_reset_url(reset_token)
+    body = f"""Hello,
+
+Click the link below to reset your Rowe AI password:
+
+{reset_url}
+
+This link expires in 30 minutes and can only be used once.
+
+If you did not request this, you can ignore this email.
+
+Rowe AI Support
+"""
+
+    send_email(
+        to_email=to_email,
+        subject="Reset Your Rowe AI Password",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
     )
 
 

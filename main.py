@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "instant-demo-cors-fix-2026-06-18-1"
+DEPLOYMENT_VERSION = "password-reset-2026-06-18-1"
 
 # -------------------------------------------------
 # Load environment
@@ -239,6 +239,20 @@ def ensure_user_stripe_schema():
                 text("ALTER TABLE users ADD COLUMN billing_status TEXT DEFAULT 'inactive'")
             )
 
+        if "password_reset_token_hash" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN password_reset_token_hash TEXT")
+            )
+
+        if "password_reset_expires_at" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN password_reset_expires_at TEXT")
+            )
+
+
+def ensure_user_password_reset_schema():
+    ensure_user_stripe_schema()
+
 
 def ensure_billing_checkout_schema():
     if engine.dialect.name != "sqlite":
@@ -264,7 +278,7 @@ def ensure_billing_checkout_schema():
 
 
 ensure_business_settings_schema()
-ensure_user_stripe_schema()
+ensure_user_password_reset_schema()
 ensure_billing_checkout_schema()
 apply_admin_email_allowlist()
 backfill_billing_for_legacy_accounts()
@@ -546,9 +560,11 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 # Routers
 # -------------------------------------------------
 from admin_routes import router as admin_router
+from auth_routes import router as auth_router
 from business_settings_routes import router as business_settings_router
 from demo_routes import router as demo_router
 app.include_router(admin_router)
+app.include_router(auth_router)
 app.include_router(business_settings_router)
 app.include_router(demo_router)
 

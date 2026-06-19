@@ -14,3 +14,4 @@ python-docx
 python-multipart
 httpx
 beautifulsoup4
+email-validator

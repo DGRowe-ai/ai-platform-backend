@@ -23,6 +23,10 @@ class User(Base):
     stripe_customer_id = Column(String, nullable=True, index=True)
     billing_status = Column(String, default="inactive")
 
+    # Password reset
+    password_reset_token_hash = Column(String, nullable=True, index=True)
+    password_reset_expires_at = Column(DateTime, nullable=True)
+
     # Possible values: "admin", "owner", "user"
     role = Column(String, default="owner")
 
