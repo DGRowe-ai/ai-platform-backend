@@ -10,7 +10,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from pathlib import Path
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "client-payment-history-2026-06-19-1"
+DEPLOYMENT_VERSION = "business-phone-directory-2026-06-19-1"
 
 # -------------------------------------------------
 # Load environment
@@ -149,6 +149,7 @@ from payment_log_utils import (
     payment_description_from_invoice,
     read_payment_log_entries,
 )
+from phone_utils import InvalidBusinessPhoneError, normalize_business_phone
 
 # -------------------------------------------------
 # Stripe setup
@@ -371,10 +372,23 @@ def ensure_billing_checkout_schema():
         )
 
 
+def ensure_business_phone_schema():
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(businesses)"))
+        }
+        if "phone" not in columns:
+            connection.execute(text("ALTER TABLE businesses ADD COLUMN phone TEXT"))
+
+
 ensure_business_settings_schema()
 ensure_user_password_reset_schema()
 ensure_referral_schema()
 ensure_billing_checkout_schema()
+ensure_business_phone_schema()
 apply_admin_email_allowlist()
 backfill_billing_for_legacy_accounts()
 backfill_referral_codes()
@@ -402,8 +416,17 @@ class SignupRequest(BaseModel):
     email: str
     password: str
     business_name: str
+    business_phone: str
     session_id: str
     referral_code: str | None = None
+
+    @field_validator("business_phone")
+    @classmethod
+    def validate_business_phone_field(cls, value: str) -> str:
+        try:
+            return normalize_business_phone(value)
+        except InvalidBusinessPhoneError as exc:
+            raise ValueError(str(exc)) from exc
 
 class CreateCheckoutSessionRequest(BaseModel):
     referral_code: str | None = None
@@ -660,6 +683,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 # Routers
 # -------------------------------------------------
 from accounting_routes import router as accounting_router
+from directory_routes import router as directory_router
 from admin_routes import router as admin_router
 from auth_routes import router as auth_router
 from account_routes import router as account_router
@@ -667,6 +691,7 @@ from business_settings_routes import router as business_settings_router
 from demo_routes import router as demo_router
 app.include_router(admin_router)
 app.include_router(accounting_router)
+app.include_router(directory_router)
 app.include_router(auth_router)
 app.include_router(account_router)
 app.include_router(business_settings_router)
@@ -1003,6 +1028,7 @@ def client_dashboard(
             "id": business.id,
             "name": business.name,
             "folder_name": business.folder_name,
+            "phone": business.phone,
         },
         "analytics": {
             "total_conversations": total_conversations,
@@ -1439,7 +1465,12 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
 
     try:
         db.flush()
-        new_business = create_business_for_user(db, user, req.business_name)
+        new_business = create_business_for_user(
+            db,
+            user,
+            req.business_name,
+            business_phone=req.business_phone,
+        )
         user.business_id = new_business.id
 
         referral_code = req.referral_code or checkout_record.referral_code
@@ -1538,6 +1569,7 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
             send_admin_registration_notification(
                 user_email=user.email,
                 business_name=req.business_name,
+                business_phone=req.business_phone,
                 billing_status=user.billing_status or "active",
                 stripe_customer_id=user.stripe_customer_id,
                 registered_at=datetime.utcnow().isoformat() + "Z",

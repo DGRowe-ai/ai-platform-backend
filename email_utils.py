@@ -45,6 +45,7 @@ def send_admin_registration_notification(
     user_email: str,
     business_name: str,
     billing_status: str,
+    business_phone: str | None = None,
     stripe_customer_id: str | None = None,
     registered_at: str | None = None,
     client_ip: str | None = None,
@@ -52,12 +53,13 @@ def send_admin_registration_notification(
     timestamp = registered_at or "unknown"
     stripe_id = stripe_customer_id or "not available"
     ip_line = f"IP Address: {client_ip}\n" if client_ip else ""
+    phone_line = f"Business Phone: {business_phone}\n" if business_phone else ""
 
     body = f"""A new user has registered on Rowe AI.
 
 Email: {user_email}
 Business Name: {business_name}
-Billing Status: {billing_status}
+{phone_line}Billing Status: {billing_status}
 Stripe Customer ID: {stripe_id}
 Registered At: {timestamp}
 {ip_line}

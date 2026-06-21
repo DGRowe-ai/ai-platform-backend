@@ -57,6 +57,7 @@ class Business(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
     folder_name = Column(String, unique=True)
+    phone = Column(String, nullable=True)
 
     owner_id = Column(Integer, ForeignKey("users.id"))
 
