@@ -18,6 +18,7 @@ from sqlalchemy import func, text
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 from openai import OpenAI
+import asyncio
 import json
 import os
 import io
@@ -31,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "account-deletion-2026-06-19-1"
+DEPLOYMENT_VERSION = "payment-logging-accounting-2026-06-19-1"
 
 # -------------------------------------------------
 # Load environment
@@ -140,6 +141,11 @@ from referral_utils import (
     ensure_user_referral_code,
     get_referral_stats,
     process_referral_conversion,
+)
+from payment_log_utils import (
+    append_payment_log_async,
+    initialize_payment_log,
+    payment_description_from_invoice,
 )
 
 # -------------------------------------------------
@@ -651,12 +657,14 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 # -------------------------------------------------
 # Routers
 # -------------------------------------------------
+from accounting_routes import router as accounting_router
 from admin_routes import router as admin_router
 from auth_routes import router as auth_router
 from account_routes import router as account_router
 from business_settings_routes import router as business_settings_router
 from demo_routes import router as demo_router
 app.include_router(admin_router)
+app.include_router(accounting_router)
 app.include_router(auth_router)
 app.include_router(account_router)
 app.include_router(business_settings_router)
@@ -1429,6 +1437,15 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
         )
 
     try:
+        initialize_payment_log(req.business_name)
+    except Exception:
+        logger.exception(
+            "Failed to initialize payment log for business=%s user_id=%s",
+            req.business_name,
+            user.id,
+        )
+
+    try:
         log_event(
             user_id=user.id,
             event_type="signup",
@@ -1521,6 +1538,15 @@ def create_business_for_existing_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     business = create_business_for_user(db, user, business_name)
+
+    try:
+        initialize_payment_log(business_name)
+    except Exception:
+        logger.exception(
+            "Failed to initialize payment log for business=%s user_id=%s",
+            business_name,
+            user.id,
+        )
 
     return {"message": "Business created", "business_id": business.id}
 
@@ -1800,6 +1826,27 @@ async def stripe_webhook(
                     user,
                     invoice_id=data.get("id"),
                 )
+                business = (
+                    db.query(Business)
+                    .filter(Business.owner_id == user.id)
+                    .order_by(Business.id.asc())
+                    .first()
+                )
+                if business:
+                    try:
+                        await append_payment_log_async(
+                            business.name,
+                            amount_cents=amount_paid,
+                            invoice_id=data.get("id") or "",
+                            description=payment_description_from_invoice(data),
+                            currency=(data.get("currency") or "usd"),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to append payment log user_id=%s invoice_id=%s",
+                            user.id,
+                            data.get("id"),
+                        )
                 if conversion:
                     referrer = conversion["referrer"]
                     referred_user = conversion["referred_user"]
