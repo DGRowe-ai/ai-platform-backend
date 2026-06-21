@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "payment-logging-accounting-2026-06-19-1"
+DEPLOYMENT_VERSION = "client-payment-history-2026-06-19-1"
 
 # -------------------------------------------------
 # Load environment
@@ -144,8 +144,10 @@ from referral_utils import (
 )
 from payment_log_utils import (
     append_payment_log_async,
+    get_payment_log_metadata,
     initialize_payment_log,
     payment_description_from_invoice,
+    read_payment_log_entries,
 )
 
 # -------------------------------------------------
@@ -1030,6 +1032,39 @@ def client_chat_history(
     return {
         "business_id": business.id,
         "messages": [serialize_message_log(log) for log in logs],
+    }
+
+
+@app.get("/client/payment_history")
+async def client_payment_history(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+
+    try:
+        entries = await asyncio.to_thread(read_payment_log_entries, business.name)
+        metadata = await asyncio.to_thread(get_payment_log_metadata, business.name)
+    except Exception:
+        logger.exception(
+            "Failed to read client payment history business_id=%s user_id=%s",
+            business.id,
+            user.id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load payment history right now.",
+        )
+
+    return {
+        "business": {
+            "id": business.id,
+            "name": business.name,
+            "folder_name": business.folder_name,
+        },
+        "payment_log_exists": metadata["log_exists"],
+        "entries": list(reversed(entries)),
     }
 
 
