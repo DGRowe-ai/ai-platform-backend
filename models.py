@@ -143,6 +143,18 @@ class BusinessSettings(Base):
 
 
 # ============================
+# WIDGET CUSTOMIZATION
+# ============================
+class WidgetSettings(Base):
+    __tablename__ = "widget_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, unique=True, index=True)
+    settings_json = Column(Text, default="{}")
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ============================
 # CHAT MESSAGE LOG (Dashboard Chat)
 # ============================
 class ChatMessage(Base):

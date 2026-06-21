@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "business-phone-directory-2026-06-19-1"
+DEPLOYMENT_VERSION = "widget-customization-2026-06-19-1"
 
 # -------------------------------------------------
 # Load environment
@@ -81,7 +81,7 @@ def get_cors_origins():
 # Database + models
 # -------------------------------------------------
 from database import Base, engine, SessionLocal, get_db
-from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding, BillingCheckoutSession
+from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding, BillingCheckoutSession, WidgetSettings
 Base.metadata.create_all(bind=engine)
 
 # -------------------------------------------------
@@ -384,11 +384,31 @@ def ensure_business_phone_schema():
             connection.execute(text("ALTER TABLE businesses ADD COLUMN phone TEXT"))
 
 
+def ensure_widget_settings_schema():
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS widget_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER UNIQUE,
+                    settings_json TEXT DEFAULT '{}',
+                    updated_at TEXT
+                )
+                """
+            )
+        )
+
+
 ensure_business_settings_schema()
 ensure_user_password_reset_schema()
 ensure_referral_schema()
 ensure_billing_checkout_schema()
 ensure_business_phone_schema()
+ensure_widget_settings_schema()
 apply_admin_email_allowlist()
 backfill_billing_for_legacy_accounts()
 backfill_referral_codes()
@@ -684,6 +704,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 # -------------------------------------------------
 from accounting_routes import router as accounting_router
 from directory_routes import router as directory_router
+from widget_routes import router as widget_router
 from admin_routes import router as admin_router
 from auth_routes import router as auth_router
 from account_routes import router as account_router
@@ -692,6 +713,7 @@ from demo_routes import router as demo_router
 app.include_router(admin_router)
 app.include_router(accounting_router)
 app.include_router(directory_router)
+app.include_router(widget_router)
 app.include_router(auth_router)
 app.include_router(account_router)
 app.include_router(business_settings_router)
