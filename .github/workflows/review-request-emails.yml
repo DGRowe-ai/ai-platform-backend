@@ -1,0 +1,19 @@
+name: Review request emails
+
+on:
+  schedule:
+    # Daily at 2:00 PM UTC
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+jobs:
+  send-review-emails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger backend review email job
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://ai-platform-backend-ulqs.onrender.com' }}
+        run: |
+          curl -sS -f -X POST "${BACKEND_URL}/internal/cron/review-request-emails" \
+            -H "X-Cron-Secret: ${CRON_SECRET}"
