@@ -2,6 +2,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
+from email.mime.image import MIMEImage
 from dotenv import load_dotenv
 import os
 
@@ -24,6 +25,9 @@ REFERRAL_ADMIN_EMAIL = os.getenv(
     "REFERRAL_ADMIN_EMAIL",
     os.getenv("ADMIN_REGISTRATION_EMAIL", "daryl_rowe@hotmail.com"),
 )
+REVIEW_EMAIL_SENDER = os.getenv("REVIEW_EMAIL_SENDER", "support@roweai.ca")
+GOOGLE_REVIEW_URL = "https://share.google/HIvgRJCoeZ1NLXap0"
+REVIEW_EMAIL_SUBJECT = "We'd Love To Hear Your Review"
 
 
 def send_email(to_email, subject, body, from_email=None):
@@ -37,6 +41,84 @@ def send_email(to_email, subject, body, from_email=None):
     server.starttls()
     server.login(SMTP_USER, SMTP_PASSWORD)
     server.sendmail(sender, to_email, msg.as_string())
+    server.quit()
+
+
+def _get_qr_code_image_bytes() -> bytes:
+    from pathlib import Path
+
+    candidates = [
+        Path(__file__).resolve().parent / "assets" / "qr-code-google-review.png",
+        Path(__file__).resolve().parent.parent
+        / "frontend"
+        / "images"
+        / "loki"
+        / "qr code"
+        / "qr-code-google-review.png",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path.read_bytes()
+    raise FileNotFoundError("Google review QR code image not found")
+
+
+def send_review_request_email(*, to_email: str, business_name: str) -> None:
+    """Thank the client after one week and ask for a Google review."""
+    plain_body = f"""Hello,
+
+Thank you for subscribing to Rowe AI and for trusting us with {business_name}'s chatbot.
+
+We hope everything is going well so far. If you have any questions or run into any issues, please reach out to us at support@roweai.ca — we're happy to help.
+
+We would also really appreciate it if you could leave us a Google review:
+{GOOGLE_REVIEW_URL}
+
+Thank you again for being a Rowe AI customer.
+
+Rowe AI Support
+support@roweai.ca
+"""
+
+    html_body = f"""<!DOCTYPE html>
+<html>
+  <body style="font-family: Arial, sans-serif; color: #172033; line-height: 1.6;">
+    <p>Hello,</p>
+    <p>Thank you for subscribing to Rowe AI and for trusting us with <strong>{business_name}</strong>'s chatbot.</p>
+    <p>We hope everything is going well so far. If you have any questions or run into any issues, please reach out to us at
+      <a href="mailto:support@roweai.ca">support@roweai.ca</a> — we're happy to help.</p>
+    <p><strong>Please leave us a Google review using the QR code below:</strong></p>
+    <p style="text-align: center;">
+      <img src="cid:google-review-qr" alt="Google review QR code" style="max-width: 220px; width: 100%; height: auto;">
+    </p>
+    <p>You can also leave a review using this link:<br>
+      <a href="{GOOGLE_REVIEW_URL}">{GOOGLE_REVIEW_URL}</a>
+    </p>
+    <p>Thank you again for being a Rowe AI customer.</p>
+    <p>Rowe AI Support<br><a href="mailto:support@roweai.ca">support@roweai.ca</a></p>
+  </body>
+</html>
+"""
+
+    msg = MIMEMultipart("related")
+    msg["Subject"] = REVIEW_EMAIL_SUBJECT
+    msg["From"] = REVIEW_EMAIL_SENDER
+    msg["To"] = to_email
+
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(MIMEText(plain_body, "plain"))
+    alternative.attach(MIMEText(html_body, "html"))
+    msg.attach(alternative)
+
+    qr_bytes = _get_qr_code_image_bytes()
+    image = MIMEImage(qr_bytes, _subtype="png")
+    image.add_header("Content-ID", "<google-review-qr>")
+    image.add_header("Content-Disposition", "inline", filename="qr-code-google-review.png")
+    msg.attach(image)
+
+    server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+    server.starttls()
+    server.login(SMTP_USER, SMTP_PASSWORD)
+    server.sendmail(REVIEW_EMAIL_SENDER, to_email, msg.as_string())
     server.quit()
 
 

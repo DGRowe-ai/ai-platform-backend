@@ -40,6 +40,10 @@ class User(Base):
     # Link to business (optional)
     business_id = Column(Integer, ForeignKey("businesses.id"), nullable=True)
 
+    # Client lifecycle
+    registered_at = Column(DateTime, nullable=True)
+    review_request_email_sent_at = Column(DateTime, nullable=True)
+
     # Relationship to businesses
     businesses = relationship(
         "Business",

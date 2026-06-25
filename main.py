@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "widget-customization-2026-06-19-1"
+DEPLOYMENT_VERSION = "review-request-email-2026-06-25-1"
 
 # -------------------------------------------------
 # Load environment
@@ -142,6 +142,7 @@ from referral_utils import (
     get_referral_stats,
     process_referral_conversion,
 )
+from review_email_utils import backfill_registered_at_from_audit_logs
 from payment_log_utils import (
     append_payment_log_async,
     get_payment_log_metadata,
@@ -295,6 +296,14 @@ def ensure_user_stripe_schema():
                 )
             )
 
+        if "registered_at" not in columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN registered_at TEXT"))
+
+        if "review_request_email_sent_at" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN review_request_email_sent_at TEXT")
+            )
+
 
 def ensure_user_password_reset_schema():
     ensure_user_stripe_schema()
@@ -345,6 +354,19 @@ def backfill_referral_codes():
     except SQLAlchemyError:
         db.rollback()
         logger.exception("Failed to backfill referral codes")
+    finally:
+        db.close()
+
+
+def backfill_registered_at_on_startup():
+    db = SessionLocal()
+    try:
+        updated = backfill_registered_at_from_audit_logs(db)
+        if updated:
+            logger.info("Backfilled registered_at for %s user(s)", updated)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Failed to backfill registered_at values")
     finally:
         db.close()
 
@@ -412,6 +434,7 @@ ensure_widget_settings_schema()
 apply_admin_email_allowlist()
 backfill_billing_for_legacy_accounts()
 backfill_referral_codes()
+backfill_registered_at_on_startup()
 
 # -------------------------------------------------
 # Request models
@@ -705,6 +728,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 from accounting_routes import router as accounting_router
 from directory_routes import router as directory_router
 from widget_routes import router as widget_router
+from review_routes import router as review_router
 from admin_routes import router as admin_router
 from auth_routes import router as auth_router
 from account_routes import router as account_router
@@ -714,6 +738,7 @@ app.include_router(admin_router)
 app.include_router(accounting_router)
 app.include_router(directory_router)
 app.include_router(widget_router)
+app.include_router(review_router)
 app.include_router(auth_router)
 app.include_router(account_router)
 app.include_router(business_settings_router)
@@ -1484,6 +1509,8 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
         user.stripe_customer_id = checkout_record.stripe_customer_id
     user.billing_status = "active"
     user.subscription_active = 1
+    if not user.registered_at:
+        user.registered_at = datetime.utcnow()
 
     try:
         db.flush()
