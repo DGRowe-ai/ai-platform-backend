@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "review-request-email-2026-06-25-1"
+DEPLOYMENT_VERSION = "github-pages-dashboard-fix-2026-06-25-1"
 
 # -------------------------------------------------
 # Load environment
@@ -51,6 +51,7 @@ DEFAULT_CORS_ORIGINS = [
     "https://ai-platform-frontend-uaaa.onrender.com",
     "https://roweai.ca",
     "https://www.roweai.ca",
+    "https://dgrowe-ai.github.io",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
