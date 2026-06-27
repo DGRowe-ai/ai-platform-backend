@@ -278,3 +278,22 @@ class ReferralSignupLog(Base):
     referrer_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     referred_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ============================
+# TRIAL ENROLLMENT (abuse prevention, survives account deletion)
+# ============================
+class TrialEnrollment(Base):
+    __tablename__ = "trial_enrollments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=True, index=True)
+    phone = Column(String, nullable=True, index=True)
+    stripe_customer_id = Column(String, nullable=True, index=True)
+    card_fingerprint = Column(String, nullable=True, index=True)
+    device_fingerprint = Column(String, nullable=True, index=True)
+    ip_address = Column(String, nullable=True, index=True)
+    stripe_session_id = Column(String, nullable=True, index=True)
+    stripe_subscription_id = Column(String, nullable=True, index=True)
+    trial_used = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)

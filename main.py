@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "github-pages-dashboard-fix-2026-06-25-1"
+DEPLOYMENT_VERSION = "trial-protection-2026-06-26-1"
 
 # -------------------------------------------------
 # Load environment
@@ -152,6 +152,13 @@ from payment_log_utils import (
     read_payment_log_entries,
 )
 from phone_utils import InvalidBusinessPhoneError, normalize_business_phone
+from trial_protection_utils import (
+    check_trial_eligibility,
+    get_client_ip,
+    process_checkout_trial_protection,
+    record_trial_enrollment,
+    strip_subscription_trial,
+)
 
 # -------------------------------------------------
 # Stripe setup
@@ -426,12 +433,39 @@ def ensure_widget_settings_schema():
         )
 
 
+def ensure_trial_enrollment_schema():
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS trial_enrollments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT,
+                    phone TEXT,
+                    stripe_customer_id TEXT,
+                    card_fingerprint TEXT,
+                    device_fingerprint TEXT,
+                    ip_address TEXT,
+                    stripe_session_id TEXT,
+                    stripe_subscription_id TEXT,
+                    trial_used INTEGER DEFAULT 1,
+                    created_at TEXT
+                )
+                """
+            )
+        )
+
+
 ensure_business_settings_schema()
 ensure_user_password_reset_schema()
 ensure_referral_schema()
 ensure_billing_checkout_schema()
 ensure_business_phone_schema()
 ensure_widget_settings_schema()
+ensure_trial_enrollment_schema()
 apply_admin_email_allowlist()
 backfill_billing_for_legacy_accounts()
 backfill_referral_codes()
@@ -463,6 +497,7 @@ class SignupRequest(BaseModel):
     business_phone: str
     session_id: str
     referral_code: str | None = None
+    device_fingerprint: str | None = None
 
     @field_validator("business_phone")
     @classmethod
@@ -474,6 +509,7 @@ class SignupRequest(BaseModel):
 
 class CreateCheckoutSessionRequest(BaseModel):
     referral_code: str | None = None
+    device_fingerprint: str | None = None
 
 class LoginRequest(BaseModel):
     email: str
@@ -1478,7 +1514,26 @@ def get_current_admin(
 @app.post("/signup")
 def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
     email = normalize_email(req.email)
+    client_ip = get_client_ip(request)
+
+    trial_result = check_trial_eligibility(
+        db,
+        email=email,
+        phone=req.business_phone,
+        device_fingerprint=req.device_fingerprint,
+        ip_address=client_ip,
+    )
+
     checkout_record = consume_checkout_session_for_signup(db, req.session_id, email)
+
+    if not trial_result.eligible:
+        if checkout_record.stripe_subscription_id:
+            strip_subscription_trial(checkout_record.stripe_subscription_id)
+        logger.info(
+            "Signup proceeding without trial for email=%s reason=%s",
+            email,
+            trial_result.reason,
+        )
 
     try:
         existing = db.query(User).filter(func.lower(User.email) == email).first()
@@ -1551,6 +1606,21 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
             status_code=500,
             detail="Unable to create business for this account",
         )
+
+    if trial_result.eligible:
+        try:
+            record_trial_enrollment(
+                db,
+                email=email,
+                phone=req.business_phone,
+                stripe_customer_id=checkout_record.stripe_customer_id or user.stripe_customer_id,
+                device_fingerprint=req.device_fingerprint,
+                ip_address=client_ip,
+                stripe_session_id=req.session_id,
+                stripe_subscription_id=checkout_record.stripe_subscription_id,
+            )
+        except Exception:
+            logger.exception("Failed to record trial enrollment for email=%s", email)
 
     try:
         initialize_payment_log(req.business_name)
@@ -1845,19 +1915,36 @@ def export_filtered(
 # Stripe Checkout
 # -------------------------------------------------
 @app.post("/create-checkout-session")
-def create_checkout_session_post(req: CreateCheckoutSessionRequest | None = None):
+def create_checkout_session_post(
+    request: Request,
+    req: CreateCheckoutSessionRequest | None = None,
+    db: Session = Depends(get_db),
+):
     referral_code = req.referral_code if req else None
-    return create_billing_first_checkout_session(referral_code=referral_code)
+    device_fingerprint = req.device_fingerprint if req else None
+    return create_billing_first_checkout_session(
+        db,
+        referral_code=referral_code,
+        device_fingerprint=device_fingerprint,
+        ip_address=get_client_ip(request),
+    )
 
 
 @app.get("/create-checkout-session")
 def create_checkout_session(
+    request: Request,
     email: str | None = None,
     business_id: str | None = None,
+    device_fingerprint: str | None = None,
     db: Session = Depends(get_db),
 ):
     user = resolve_checkout_user(db, email=email, business_id=business_id)
-    checkout_url = create_subscription_checkout_session(db, user)
+    checkout_url = create_subscription_checkout_session(
+        db,
+        user,
+        device_fingerprint=device_fingerprint,
+        ip_address=get_client_ip(request),
+    )
     return RedirectResponse(url=checkout_url, status_code=303)
 
 
@@ -1895,6 +1982,10 @@ async def stripe_webhook(
 
     if event_type == "checkout.session.completed":
         upsert_billing_checkout_session(db, data)
+        try:
+            process_checkout_trial_protection(db, data)
+        except Exception:
+            logger.exception("Trial protection failed for checkout session=%s", data.get("id"))
         email = (
             (data.get("customer_details") or {}).get("email")
             or data.get("customer_email")

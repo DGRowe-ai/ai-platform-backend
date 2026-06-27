@@ -29,6 +29,7 @@ from models import (
     ReferralSignupLog,
     User,
 )
+from trial_protection_utils import persist_trial_identifiers_on_account_deletion
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,17 @@ def delete_user_account(db: Session, user: User) -> dict:
     business_folders = [business.folder_name for business in businesses]
 
     canceled_subscription_ids = cancel_user_stripe_subscriptions(user)
+
+    primary_phone = None
+    if businesses:
+        primary_phone = businesses[0].phone
+
+    persist_trial_identifiers_on_account_deletion(
+        db,
+        email=user_email,
+        phone=primary_phone,
+        stripe_customer_id=user.stripe_customer_id,
+    )
 
     for business in businesses:
         _delete_business_data(db, business)

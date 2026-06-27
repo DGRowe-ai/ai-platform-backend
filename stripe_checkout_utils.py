@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from auth_utils import normalize_email
 from business_utils import get_business_by_key
 from models import BillingCheckoutSession, User
+from trial_protection_utils import check_trial_eligibility
 
 logger = logging.getLogger(__name__)
 
@@ -152,26 +153,48 @@ def upsert_billing_checkout_session(db: Session, session: dict) -> BillingChecko
     return record
 
 
-def create_billing_first_checkout_session(referral_code: str | None = None) -> dict:
+def create_billing_first_checkout_session(
+    db: Session,
+    *,
+    referral_code: str | None = None,
+    device_fingerprint: str | None = None,
+    ip_address: str | None = None,
+) -> dict:
     if not stripe.api_key:
         raise HTTPException(
             status_code=503,
             detail="Stripe is not configured for checkout",
         )
 
+    trial_result = check_trial_eligibility(
+        db,
+        device_fingerprint=device_fingerprint,
+        ip_address=ip_address,
+    )
+    trial_eligible = trial_result.eligible
+
     frontend_url = get_frontend_public_url()
     price_id = get_stripe_price_id()
-    trial_days = get_trial_period_days()
+    trial_days = get_trial_period_days() if trial_eligible else 0
 
     metadata = {}
     if referral_code:
         metadata["referral_code"] = referral_code.strip()
+    if device_fingerprint:
+        metadata["device_fingerprint"] = device_fingerprint.strip()
+    if ip_address:
+        metadata["signup_ip"] = ip_address.strip()
+    metadata["trial_eligible"] = "1" if trial_eligible else "0"
+
+    subscription_data = {}
+    if trial_days > 0:
+        subscription_data["trial_period_days"] = trial_days
 
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
             line_items=[{"price": price_id, "quantity": 1}],
-            subscription_data={"trial_period_days": trial_days},
+            subscription_data=subscription_data or None,
             metadata=metadata or None,
             success_url=f"{frontend_url}/register.html?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{frontend_url}/billing.html",
@@ -189,21 +212,57 @@ def create_billing_first_checkout_session(referral_code: str | None = None) -> d
             detail="Stripe checkout session did not return a redirect URL",
         )
 
-    return {"url": session.url, "session_id": session.id}
+    response = {"url": session.url, "session_id": session.id}
+    if not trial_eligible:
+        response["trial_eligible"] = False
+        response["trial_message"] = (
+            trial_result.reason
+            or "Free trial is not available. You can still subscribe and start immediately."
+        )
+    else:
+        response["trial_eligible"] = True
+    return response
 
 
-def create_subscription_checkout_session(db: Session, user: User) -> str:
+def create_subscription_checkout_session(
+    db: Session,
+    user: User,
+    *,
+    device_fingerprint: str | None = None,
+    ip_address: str | None = None,
+) -> str:
     customer_id = get_or_create_stripe_customer(db, user)
     frontend_url = get_frontend_public_url()
     price_id = get_stripe_price_id()
-    trial_days = get_trial_period_days()
+
+    trial_result = check_trial_eligibility(
+        db,
+        email=user.email,
+        stripe_customer_id=customer_id,
+        device_fingerprint=device_fingerprint,
+        ip_address=ip_address,
+    )
+    trial_days = get_trial_period_days() if trial_result.eligible else 0
+
+    metadata = {
+        "trial_eligible": "1" if trial_result.eligible else "0",
+    }
+    if device_fingerprint:
+        metadata["device_fingerprint"] = device_fingerprint.strip()
+    if ip_address:
+        metadata["signup_ip"] = ip_address.strip()
+
+    subscription_data = {}
+    if trial_days > 0:
+        subscription_data["trial_period_days"] = trial_days
 
     try:
         session = stripe.checkout.Session.create(
             customer=customer_id,
             mode="subscription",
             line_items=[{"price": price_id, "quantity": 1}],
-            subscription_data={"trial_period_days": trial_days},
+            subscription_data=subscription_data or None,
+            metadata=metadata,
             success_url=f"{frontend_url}/register.html?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{frontend_url}/billing.html",
         )
