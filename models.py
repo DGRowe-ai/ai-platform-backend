@@ -144,6 +144,10 @@ class BusinessSettings(Base):
     max_response_length = Column(Integer, default=300)
     custom_instructions = Column(Text, default="")
     faq_items = Column(Text, default="")
+    business_timezone = Column(String, default="America/Toronto")
+    appointment_notification_method = Column(String, default="email")
+    appointment_notification_email = Column(String, nullable=True)
+    appointment_webhook_url = Column(String, nullable=True)
 
 
 # ============================
@@ -296,4 +300,24 @@ class TrialEnrollment(Base):
     stripe_session_id = Column(String, nullable=True, index=True)
     stripe_subscription_id = Column(String, nullable=True, index=True)
     trial_used = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ============================
+# APPOINTMENT REQUESTS (client dashboard only)
+# ============================
+class AppointmentRequest(Base):
+    __tablename__ = "appointment_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), index=True)
+    customer_name = Column(String, nullable=False)
+    customer_contact = Column(String, nullable=False)
+    requested_date = Column(String, nullable=False)
+    requested_time = Column(String, nullable=False)
+    service = Column(String, nullable=False)
+    notes = Column(Text, default="")
+    status = Column(String, default="Pending", index=True)
+    timezone = Column(String, default="America/Toronto")
+    normalized_datetime = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,6 +1,6 @@
 from database import SessionLocal
 from models import BusinessSettings
-import json
+from appointment_utils import APPOINTMENT_KNOWLEDGE_LINE, seed_appointment_knowledge
 
 
 def _parse_faq_items(raw_faq_items):
@@ -26,6 +26,12 @@ def serialize_settings(settings: BusinessSettings):
         "max_response_length": settings.max_response_length,
         "custom_instructions": settings.custom_instructions or "",
         "faqs": _parse_faq_items(settings.faq_items),
+        "appointment_settings": {
+            "timezone": settings.business_timezone or "America/Toronto",
+            "notification_method": settings.appointment_notification_method or "email",
+            "notification_email": settings.appointment_notification_email or "",
+            "webhook_url": settings.appointment_webhook_url or "",
+        },
     }
 
 
@@ -40,6 +46,7 @@ def get_settings(business_id: int):
         # Auto-create settings if missing
         if not settings:
             settings = BusinessSettings(business_id=business_id)
+            seed_appointment_knowledge(settings)
             db.add(settings)
             db.commit()
             db.refresh(settings)

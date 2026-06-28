@@ -44,6 +44,65 @@ def send_email(to_email, subject, body, from_email=None):
     server.quit()
 
 
+def send_appointment_owner_notification(
+    *,
+    to_email: str,
+    business_name: str,
+    appointment: dict,
+) -> None:
+    when = appointment.get("normalized_datetime") or (
+        f"{appointment.get('requested_date')} {appointment.get('requested_time')}"
+    )
+    body = f"""Hello,
+
+A new appointment request was received for {business_name}.
+
+Customer: {appointment.get('customer_name')}
+Contact: {appointment.get('customer_contact')}
+Service: {appointment.get('service')}
+Requested time: {when} ({appointment.get('timezone')})
+Status: {appointment.get('status')}
+Notes: {appointment.get('notes') or 'None'}
+
+Sign in to your client dashboard to review and update this request.
+
+Rowe AI
+"""
+    send_email(
+        to_email=to_email,
+        subject=f"New appointment request for {business_name}",
+        body=body,
+    )
+
+
+def send_appointment_confirmation_email(
+    *,
+    to_email: str,
+    business_name: str,
+    appointment: dict,
+) -> None:
+    when = appointment.get("normalized_datetime") or (
+        f"{appointment.get('requested_date')} {appointment.get('requested_time')}"
+    )
+    body = f"""Hello {appointment.get('customer_name')},
+
+Thank you for your appointment request with {business_name}.
+
+Service: {appointment.get('service')}
+Requested time: {when} ({appointment.get('timezone')})
+Status: Pending
+
+The business will review your request and confirm soon.
+
+{business_name}
+"""
+    send_email(
+        to_email=to_email,
+        subject=f"Appointment request received — {business_name}",
+        body=body,
+    )
+
+
 def _get_qr_code_image_bytes() -> bytes:
     from pathlib import Path
 

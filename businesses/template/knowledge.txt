@@ -1,2 +1,4 @@
 This is the default knowledge base for new businesses.
 Add your business details here.
+
+Customers can request appointments through the chatbot by telling it the date, time, and service they want.

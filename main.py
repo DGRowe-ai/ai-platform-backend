@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOYMENT_VERSION = "trial-protection-2026-06-26-1"
+DEPLOYMENT_VERSION = "appointment-requests-2026-06-26-1"
 
 # -------------------------------------------------
 # Load environment
@@ -82,7 +82,7 @@ def get_cors_origins():
 # Database + models
 # -------------------------------------------------
 from database import Base, engine, SessionLocal, get_db
-from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding, BillingCheckoutSession, WidgetSettings
+from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding, BillingCheckoutSession, WidgetSettings, AppointmentRequest, BusinessSettings
 Base.metadata.create_all(bind=engine)
 
 # -------------------------------------------------
@@ -152,6 +152,16 @@ from payment_log_utils import (
     read_payment_log_entries,
 )
 from phone_utils import InvalidBusinessPhoneError, normalize_business_phone
+from appointment_utils import (
+    APPOINTMENT_CHAT_INSTRUCTIONS,
+    APPOINTMENT_KNOWLEDGE_LINE,
+    APPOINTMENT_TOOL,
+    process_appointment_tool_call,
+    serialize_appointment,
+    serialize_appointment_settings,
+    update_appointment_settings,
+    update_appointment_status,
+)
 from trial_protection_utils import (
     check_trial_eligibility,
     get_client_ip,
@@ -249,6 +259,38 @@ def ensure_business_settings_schema():
         if "faq_items" not in columns:
             connection.execute(
                 text("ALTER TABLE business_settings ADD COLUMN faq_items TEXT DEFAULT ''")
+            )
+
+        if "business_timezone" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE business_settings "
+                    "ADD COLUMN business_timezone TEXT DEFAULT 'America/Toronto'"
+                )
+            )
+
+        if "appointment_notification_method" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE business_settings "
+                    "ADD COLUMN appointment_notification_method TEXT DEFAULT 'email'"
+                )
+            )
+
+        if "appointment_notification_email" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE business_settings "
+                    "ADD COLUMN appointment_notification_email TEXT"
+                )
+            )
+
+        if "appointment_webhook_url" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE business_settings "
+                    "ADD COLUMN appointment_webhook_url TEXT"
+                )
             )
 
 
@@ -459,6 +501,33 @@ def ensure_trial_enrollment_schema():
         )
 
 
+def ensure_appointment_requests_schema():
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS appointment_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL,
+                    customer_name TEXT NOT NULL,
+                    customer_contact TEXT NOT NULL,
+                    requested_date TEXT NOT NULL,
+                    requested_time TEXT NOT NULL,
+                    service TEXT NOT NULL,
+                    notes TEXT DEFAULT '',
+                    status TEXT DEFAULT 'Pending',
+                    timezone TEXT DEFAULT 'America/Toronto',
+                    normalized_datetime TEXT,
+                    created_at TEXT
+                )
+                """
+            )
+        )
+
+
 ensure_business_settings_schema()
 ensure_user_password_reset_schema()
 ensure_referral_schema()
@@ -466,6 +535,7 @@ ensure_billing_checkout_schema()
 ensure_business_phone_schema()
 ensure_widget_settings_schema()
 ensure_trial_enrollment_schema()
+ensure_appointment_requests_schema()
 apply_admin_email_allowlist()
 backfill_billing_for_legacy_accounts()
 backfill_referral_codes()
@@ -869,12 +939,15 @@ def _execute_chat(
     Custom instructions: {settings.get('custom_instructions', '')}
     Frequently asked questions:
     {faq_text or 'No FAQs configured.'}
+    {APPOINTMENT_CHAT_INSTRUCTIONS}
     """
 
     if kb_context:
         system_prompt += f"\nRelevant uploaded knowledge:\n{kb_context}"
     if legacy_kb:
         system_prompt += f"\nAdditional business knowledge:\n{legacy_kb[:4000]}"
+    if APPOINTMENT_KNOWLEDGE_LINE not in system_prompt:
+        system_prompt += f"\n{APPOINTMENT_KNOWLEDGE_LINE}"
 
     save_message(business.id, conversation_id, "user", message)
     history = get_history(business.id)
@@ -887,11 +960,25 @@ def _execute_chat(
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=conversation,
+        tools=[APPOINTMENT_TOOL],
+        tool_choice="auto",
         max_tokens=settings.get("max_response_length", 300),
         timeout=15,
     )
 
-    bot_reply = response.choices[0].message.content
+    assistant_message = response.choices[0].message
+    if assistant_message.tool_calls:
+        tool_call = assistant_message.tool_calls[0]
+        if tool_call.function.name == "submit_appointment_request":
+            bot_reply = process_appointment_tool_call(
+                db,
+                business,
+                tool_call.function.arguments,
+            )
+        else:
+            bot_reply = assistant_message.content or "How can I help you today?"
+    else:
+        bot_reply = assistant_message.content or "How can I help you today?"
     save_message(business.id, conversation_id, "assistant", bot_reply)
 
     return bot_reply
@@ -1251,6 +1338,68 @@ def save_client_chatbot_settings(
     require_role_guard(user, ["owner", "admin", "staff"])
     business = get_client_business(db, user)
     return update_settings(business.id, data)
+
+
+@app.get("/client/appointment_requests")
+def list_client_appointment_requests(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    records = (
+        db.query(AppointmentRequest)
+        .filter(AppointmentRequest.business_id == business.id)
+        .order_by(AppointmentRequest.created_at.desc())
+        .all()
+    )
+    return {
+        "business_id": business.id,
+        "requests": [serialize_appointment(record) for record in records],
+    }
+
+
+@app.patch("/client/appointment_requests/{appointment_id}")
+def patch_client_appointment_request(
+    appointment_id: int,
+    data: dict,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    status = data.get("status")
+    if not status:
+        raise HTTPException(status_code=400, detail="status is required")
+    return update_appointment_status(db, business.id, appointment_id, status)
+
+
+@app.get("/client/appointment_settings")
+def get_client_appointment_settings(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    settings = (
+        db.query(BusinessSettings)
+        .filter(BusinessSettings.business_id == business.id)
+        .first()
+    )
+    if not settings:
+        return serialize_appointment_settings(BusinessSettings(business_id=business.id))
+    return serialize_appointment_settings(settings)
+
+
+@app.post("/client/appointment_settings")
+def save_client_appointment_settings(
+    data: dict,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    business = get_client_business(db, user)
+    return update_appointment_settings(db, business.id, data)
 
 
 @app.post("/client/change_password")

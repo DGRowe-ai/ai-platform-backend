@@ -27,6 +27,7 @@ from models import (
     Payment,
     RateLimit,
     ReferralSignupLog,
+    AppointmentRequest,
     User,
 )
 from trial_protection_utils import persist_trial_identifiers_on_account_deletion
@@ -120,6 +121,9 @@ def _delete_business_data(db: Session, business: Business) -> None:
         synchronize_session=False
     )
     db.query(Payment).filter(Payment.business_id == business_id).delete(
+        synchronize_session=False
+    )
+    db.query(AppointmentRequest).filter(AppointmentRequest.business_id == business_id).delete(
         synchronize_session=False
     )
 

@@ -55,6 +55,10 @@ def create_business_for_user(
         db.commit()
         db.refresh(business)
 
+        from appointment_utils import ensure_business_knowledge_file
+
+        ensure_business_knowledge_file(business.folder_name)
+
         logger.info("Business created successfully: %s (ID: %s)", folder_name, business.id)
         return business
 
