@@ -3,6 +3,7 @@ import unittest
 from twilio_realtime_bridge import (
     build_voice_twiml,
     get_media_stream_wss_url,
+    _openai_realtime_uri,
 )
 
 
@@ -21,6 +22,13 @@ class TwilioRealtimeBridgeTests(unittest.TestCase):
         self.assertIn("<Connect>", twiml)
         self.assertIn("<Stream url=\"wss://example.com/media\"", twiml)
         self.assertNotIn("<Pause", twiml)
+
+    def test_realtime_uri_uses_ga_model(self):
+        import os
+
+        os.environ.pop("REALTIME_MODEL", None)
+        uri = _openai_realtime_uri()
+        self.assertIn("model=gpt-realtime", uri)
 
 
 if __name__ == "__main__":
