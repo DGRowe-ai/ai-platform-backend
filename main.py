@@ -2295,6 +2295,11 @@ async def stripe_webhook(
     return {"status": "success"}
 
 
+from twilio_routes import router as twilio_router
+
+app.include_router(twilio_router)
+
+
 # Keep CORS as the outermost ASGI layer so even unexpected 500 responses include
 # CORS headers and browsers show the real JSON error instead of masking it.
 app = CORSMiddleware(
