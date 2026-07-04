@@ -16,3 +16,4 @@ httpx
 beautifulsoup4
 email-validator
 tzdata
+websockets
