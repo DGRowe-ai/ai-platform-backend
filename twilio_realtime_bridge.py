@@ -44,13 +44,12 @@ def get_media_stream_wss_url() -> str:
 
 
 def build_voice_twiml(stream_url: str) -> str:
-    """TwiML that starts a Media Stream and keeps the call open."""
+    """TwiML for bidirectional Media Streams (Connect is required for AI audio playback)."""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Start>
-    <Stream url="{stream_url}" track="inbound_track"/>
-  </Start>
-  <Pause length="3600"/>
+  <Connect>
+    <Stream url="{stream_url}"/>
+  </Connect>
 </Response>"""
 
 
@@ -73,6 +72,26 @@ def _realtime_instructions() -> str:
     return os.getenv("REALTIME_INSTRUCTIONS", DEFAULT_INSTRUCTIONS).strip()
 
 
+def _openai_connect(uri: str, headers: dict[str, str]):
+    """Return an OpenAI Realtime WebSocket context manager."""
+    try:
+        return websockets.connect(
+            uri,
+            additional_headers=headers,
+            ping_interval=20,
+            ping_timeout=20,
+            open_timeout=15,
+        )
+    except TypeError:
+        return websockets.connect(
+            uri,
+            extra_headers=headers,
+            ping_interval=20,
+            ping_timeout=20,
+            open_timeout=15,
+        )
+
+
 async def _configure_openai_session(openai_ws: websockets.WebSocketClientProtocol) -> None:
     session_update = {
         "type": "session.update",
@@ -87,7 +106,7 @@ async def _configure_openai_session(openai_ws: websockets.WebSocketClientProtoco
                 "type": "server_vad",
                 "threshold": 0.5,
                 "prefix_padding_ms": 300,
-                "silence_duration_ms": 500,
+                "silence_duration_ms": 700,
                 "create_response": True,
                 "interrupt_response": True,
             },
@@ -98,6 +117,7 @@ async def _configure_openai_session(openai_ws: websockets.WebSocketClientProtoco
 
 
 async def _request_initial_greeting(openai_ws: websockets.WebSocketClientProtocol) -> None:
+    logger.info("Requesting initial AI greeting")
     await openai_ws.send(
         json.dumps(
             {
@@ -111,17 +131,67 @@ async def _request_initial_greeting(openai_ws: websockets.WebSocketClientProtoco
 
 
 def _audio_delta(event: dict[str, Any]) -> str | None:
-    if event.get("type") == "response.output_audio.delta":
+    event_type = event.get("type")
+    if event_type == "response.output_audio.delta":
         return event.get("delta")
-    if event.get("type") == "response.audio.delta":
+    if event_type == "response.audio.delta":
         return event.get("delta")
+    if event_type == "response.output_audio.done":
+        return None
     return None
+
+
+class StreamState:
+    def __init__(self) -> None:
+        self.stream_sid: str | None = None
+        self.call_sid: str | None = None
+        self.greeted = False
+        self.pending_audio: list[str] = []
+        self.ready = asyncio.Event()
+
+
+async def _send_audio_to_twilio(
+    twilio_ws: WebSocket,
+    state: StreamState,
+    audio_chunk: str,
+) -> None:
+    if twilio_ws.client_state != WebSocketState.CONNECTED:
+        return
+
+    if not state.stream_sid:
+        state.pending_audio.append(audio_chunk)
+        return
+
+    await twilio_ws.send_text(
+        json.dumps(
+            {
+                "event": "media",
+                "streamSid": state.stream_sid,
+                "media": {"payload": audio_chunk},
+            }
+        )
+    )
+
+
+async def _flush_pending_audio(twilio_ws: WebSocket, state: StreamState) -> None:
+    if not state.stream_sid or not state.pending_audio:
+        return
+
+    logger.info(
+        "Flushing %s buffered audio chunk(s) to Twilio streamSid=%s",
+        len(state.pending_audio),
+        state.stream_sid,
+    )
+    pending = state.pending_audio[:]
+    state.pending_audio.clear()
+    for chunk in pending:
+        await _send_audio_to_twilio(twilio_ws, state, chunk)
 
 
 async def _forward_twilio_to_openai(
     twilio_ws: WebSocket,
     openai_ws: websockets.WebSocketClientProtocol,
-    state: dict[str, str | None],
+    state: StreamState,
 ) -> None:
     while True:
         message = await twilio_ws.receive_text()
@@ -134,18 +204,25 @@ async def _forward_twilio_to_openai(
 
         if event == "start":
             start = payload.get("start") or {}
-            state["stream_sid"] = start.get("streamSid")
-            state["call_sid"] = start.get("callSid")
+            state.stream_sid = start.get("streamSid")
+            state.call_sid = start.get("callSid")
+            state.ready.set()
             logger.info(
                 "Twilio media stream started streamSid=%s callSid=%s",
-                state.get("stream_sid"),
-                state.get("call_sid"),
+                state.stream_sid,
+                state.call_sid,
             )
+            await _flush_pending_audio(twilio_ws, state)
+
+            if not state.greeted:
+                state.greeted = True
+                await _request_initial_greeting(openai_ws)
             continue
 
         if event == "media":
             media = payload.get("media") or {}
-            if media.get("track") not in {None, "inbound", "inbound_track"}:
+            track = media.get("track")
+            if track not in {None, "inbound", "inbound_track"}:
                 continue
             audio = media.get("payload")
             if not audio:
@@ -156,14 +233,14 @@ async def _forward_twilio_to_openai(
             continue
 
         if event == "stop":
-            logger.info("Twilio media stream stopped streamSid=%s", state.get("stream_sid"))
+            logger.info("Twilio media stream stopped streamSid=%s", state.stream_sid)
             break
 
 
 async def _forward_openai_to_twilio(
     twilio_ws: WebSocket,
     openai_ws: websockets.WebSocketClientProtocol,
-    state: dict[str, str | None],
+    state: StreamState,
 ) -> None:
     async for raw_message in openai_ws:
         event = json.loads(raw_message)
@@ -174,42 +251,30 @@ async def _forward_openai_to_twilio(
             continue
 
         if event_type in {"session.created", "session.updated"}:
-            if event_type == "session.updated" and not state.get("greeted"):
-                state["greeted"] = True
-                await _request_initial_greeting(openai_ws)
+            logger.info("OpenAI Realtime event: %s", event_type)
             continue
 
         if event_type == "input_audio_buffer.speech_started":
-            stream_sid = state.get("stream_sid")
-            if stream_sid and twilio_ws.client_state == WebSocketState.CONNECTED:
+            if state.stream_sid and twilio_ws.client_state == WebSocketState.CONNECTED:
                 await twilio_ws.send_text(
-                    json.dumps({"event": "clear", "streamSid": stream_sid})
+                    json.dumps({"event": "clear", "streamSid": state.stream_sid})
                 )
             await openai_ws.send(json.dumps({"type": "response.cancel"}))
             continue
 
         audio_chunk = _audio_delta(event)
         if audio_chunk:
-            stream_sid = state.get("stream_sid")
-            if stream_sid and twilio_ws.client_state == WebSocketState.CONNECTED:
-                await twilio_ws.send_text(
-                    json.dumps(
-                        {
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": audio_chunk},
-                        }
-                    )
-                )
+            await _send_audio_to_twilio(twilio_ws, state, audio_chunk)
             continue
 
-        if event_type in {"response.done", "response.completed"}:
-            logger.debug("OpenAI response completed for streamSid=%s", state.get("stream_sid"))
+        if event_type in {"response.done", "response.completed", "response.output_audio.done"}:
+            logger.info("OpenAI response completed streamSid=%s", state.stream_sid)
 
 
 async def handle_twilio_openai_media_stream(twilio_ws: WebSocket) -> None:
     """Accept Twilio Media Stream and bridge audio with OpenAI Realtime."""
     await twilio_ws.accept()
+    logger.info("Twilio /media WebSocket accepted")
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -224,16 +289,11 @@ async def handle_twilio_openai_media_stream(twilio_ws: WebSocket) -> None:
         "OpenAI-Beta": "realtime=v1",
     }
 
-    state: dict[str, str | None] = {"stream_sid": None, "call_sid": None, "greeted": False}
+    state = StreamState()
 
     try:
-        async with websockets.connect(
-            openai_uri,
-            additional_headers=headers,
-            ping_interval=20,
-            ping_timeout=20,
-            open_timeout=15,
-        ) as openai_ws:
+        async with _openai_connect(openai_uri, headers) as openai_ws:
+            logger.info("Connected to OpenAI Realtime model=%s", model)
             await _configure_openai_session(openai_ws)
 
             twilio_task = asyncio.create_task(
@@ -250,11 +310,12 @@ async def handle_twilio_openai_media_stream(twilio_ws: WebSocket) -> None:
 
             for task in pending:
                 task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.gather(*pending, return_exception=True)
 
             for task in done:
-                if task.exception():
-                    raise task.exception()
+                exc = task.exception()
+                if exc:
+                    raise exc
 
     except WebSocketDisconnect:
         logger.info("Twilio media WebSocket disconnected")
@@ -265,4 +326,8 @@ async def handle_twilio_openai_media_stream(twilio_ws: WebSocket) -> None:
         if twilio_ws.client_state == WebSocketState.CONNECTED:
             await twilio_ws.close(code=1011)
     finally:
-        logger.info("Media stream bridge closed streamSid=%s", state.get("stream_sid"))
+        logger.info(
+            "Media stream bridge closed streamSid=%s callSid=%s",
+            state.stream_sid,
+            state.call_sid,
+        )

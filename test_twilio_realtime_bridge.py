@@ -16,11 +16,11 @@ class TwilioRealtimeBridgeTests(unittest.TestCase):
             "wss://ai-platform-backend-ulqs.onrender.com/media",
         )
 
-    def test_voice_twiml_uses_start_stream(self):
+    def test_voice_twiml_uses_connect_stream(self):
         twiml = build_voice_twiml("wss://example.com/media")
-        self.assertIn("<Start>", twiml)
+        self.assertIn("<Connect>", twiml)
         self.assertIn("<Stream url=\"wss://example.com/media\"", twiml)
-        self.assertIn("<Pause length=\"3600\"/>", twiml)
+        self.assertNotIn("<Pause", twiml)
 
 
 if __name__ == "__main__":
