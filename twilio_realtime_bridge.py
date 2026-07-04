@@ -46,12 +46,28 @@ def get_media_stream_wss_url() -> str:
     return f"wss://{base}/media"
 
 
-def build_voice_twiml(stream_url: str) -> str:
+def build_voice_twiml(
+    stream_url: str,
+    *,
+    business_id: int | None = None,
+    caller_number: str | None = None,
+) -> str:
     """TwiML for bidirectional Media Streams."""
+    parameters = ""
+    if business_id is not None:
+        parameters += f'      <Parameter name="business_id" value="{business_id}"/>\n'
+    if caller_number:
+        safe_caller = caller_number.replace('"', "")
+        parameters += f'      <Parameter name="caller" value="{safe_caller}"/>\n'
+
+    stream_body = f'    <Stream url="{stream_url}">\n{parameters}    </Stream>'
+    if not parameters:
+        stream_body = f'    <Stream url="{stream_url}"/>'
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="{stream_url}"/>
+{stream_body}
   </Connect>
 </Response>"""
 
@@ -129,7 +145,10 @@ def _openai_connect(uri: str, headers: dict[str, str]):
         return websockets.connect(uri, extra_headers=headers, **kwargs)
 
 
-async def _configure_openai_session(openai_ws: websockets.WebSocketClientProtocol) -> None:
+async def _configure_openai_session(
+    openai_ws: websockets.WebSocketClientProtocol,
+    instructions: str | None = None,
+) -> None:
     """Use GA Realtime session schema (audio/pcmu matches Twilio g711 ulaw)."""
     model = _realtime_model()
     session_update = {
@@ -148,7 +167,7 @@ async def _configure_openai_session(openai_ws: websockets.WebSocketClientProtoco
                     "voice": _realtime_voice(),
                 },
             },
-            "instructions": _realtime_instructions(),
+            "instructions": instructions or _realtime_instructions(),
         },
     }
     logger.info("Sending OpenAI session.update model=%s voice=%s", model, _realtime_voice())
@@ -189,8 +208,12 @@ class StreamState:
     def __init__(self) -> None:
         self.stream_sid: str | None = None
         self.call_sid: str | None = None
+        self.business_id: int | None = None
+        self.caller_number: str | None = None
+        self.call_log_id: int | None = None
         self.greeted = False
         self.pending_audio: list[str] = []
+        self.instructions: str | None = None
 
 
 async def _send_audio_to_twilio(
@@ -229,6 +252,50 @@ async def _flush_pending_audio(twilio_ws: WebSocket, state: StreamState) -> None
         await _send_audio_to_twilio(twilio_ws, state, chunk)
 
 
+def _transcript_from_event(event: dict[str, Any]) -> tuple[str, str] | None:
+    event_type = event.get("type")
+    if event_type == "conversation.item.input_audio_transcription.completed":
+        transcript = event.get("transcript") or (event.get("item") or {}).get("transcript")
+        if transcript:
+            return "user", transcript
+    if event_type in {
+        "response.audio_transcript.done",
+        "response.output_audio_transcript.done",
+        "response.output_audio_transcript.completed",
+    }:
+        transcript = event.get("transcript")
+        if transcript:
+            return "assistant", transcript
+    return None
+
+
+def _load_business_voice_instructions(business_id: int | None) -> str | None:
+    if not business_id:
+        return None
+
+    try:
+        from database import SessionLocal
+        from knowledge_utils import retrieve_knowledge_context
+        from models import BusinessSettings
+        from voice_settings_utils import build_voice_realtime_instructions
+
+        with SessionLocal() as db:
+            settings = (
+                db.query(BusinessSettings).filter_by(business_id=business_id).first()
+            )
+            if not settings:
+                return None
+            knowledge_context = retrieve_knowledge_context(
+                db,
+                business_id,
+                "business phone receptionist knowledge",
+            )
+            return build_voice_realtime_instructions(settings, knowledge_context)
+    except Exception:
+        logger.exception("Unable to load voice instructions for business_id=%s", business_id)
+        return None
+
+
 async def _receive_from_twilio(
     twilio_ws: WebSocket,
     openai_ws: websockets.WebSocketClientProtocol,
@@ -247,11 +314,34 @@ async def _receive_from_twilio(
                 start = payload.get("start") or {}
                 state.stream_sid = start.get("streamSid")
                 state.call_sid = start.get("callSid")
+                custom = start.get("customParameters") or {}
+                business_raw = custom.get("business_id")
+                if business_raw:
+                    try:
+                        state.business_id = int(business_raw)
+                    except (TypeError, ValueError):
+                        logger.warning("Invalid business_id parameter=%s", business_raw)
+                state.caller_number = custom.get("caller") or state.caller_number
                 logger.info(
-                    "Twilio media stream started streamSid=%s callSid=%s",
+                    "Twilio media stream started streamSid=%s callSid=%s businessId=%s",
                     state.stream_sid,
                     state.call_sid,
+                    state.business_id,
                 )
+                if state.business_id and state.call_sid:
+                    try:
+                        from voice_call_utils import start_voice_call
+
+                        state.call_log_id = start_voice_call(
+                            state.business_id,
+                            call_sid=state.call_sid,
+                            caller_number=state.caller_number,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to create voice call log business_id=%s",
+                            state.business_id,
+                        )
                 await _flush_pending_audio(twilio_ws, state)
                 if not state.greeted and _openai_ws_open(openai_ws):
                     state.greeted = True
@@ -298,6 +388,16 @@ async def _send_to_twilio(
                 logger.info("OpenAI Realtime event: %s", event_type)
                 continue
 
+            transcript_entry = _transcript_from_event(event)
+            if transcript_entry and state.call_log_id:
+                role, text = transcript_entry
+                try:
+                    from voice_call_utils import append_voice_call_transcript
+
+                    append_voice_call_transcript(state.call_log_id, role, text)
+                except Exception:
+                    logger.exception("Failed to append voice transcript call_log_id=%s", state.call_log_id)
+
             if event_type == "input_audio_buffer.speech_started":
                 if state.stream_sid and twilio_ws.client_state == WebSocketState.CONNECTED:
                     await twilio_ws.send_json(
@@ -324,10 +424,15 @@ async def _send_to_twilio(
         logger.exception("Error while forwarding OpenAI audio to Twilio")
 
 
-async def handle_twilio_openai_media_stream(twilio_ws: WebSocket) -> None:
+async def handle_twilio_openai_media_stream(
+    twilio_ws: WebSocket,
+    *,
+    business_id: int | None = None,
+    caller_number: str | None = None,
+) -> None:
     """Accept Twilio Media Stream and bridge audio with OpenAI Realtime."""
     await twilio_ws.accept()
-    logger.info("Twilio /media WebSocket accepted")
+    logger.info("Twilio /media WebSocket accepted business_id=%s", business_id)
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -338,11 +443,14 @@ async def handle_twilio_openai_media_stream(twilio_ws: WebSocket) -> None:
     headers = {"Authorization": f"Bearer {api_key}"}
 
     state = StreamState()
+    state.business_id = business_id
+    state.caller_number = caller_number
+    state.instructions = _load_business_voice_instructions(business_id)
 
     try:
         async with _openai_connect(openai_uri, headers) as openai_ws:
             logger.info("Connected to OpenAI Realtime uri=%s", openai_uri)
-            await _configure_openai_session(openai_ws)
+            await _configure_openai_session(openai_ws, state.instructions)
             await asyncio.gather(
                 _receive_from_twilio(twilio_ws, openai_ws, state),
                 _send_to_twilio(twilio_ws, openai_ws, state),
@@ -373,6 +481,13 @@ async def handle_twilio_openai_media_stream(twilio_ws: WebSocket) -> None:
             state.call_sid,
         )
     finally:
+        if state.call_log_id:
+            try:
+                from voice_call_utils import end_voice_call
+
+                end_voice_call(state.call_log_id)
+            except Exception:
+                logger.exception("Failed to finalize voice call log id=%s", state.call_log_id)
         logger.info(
             "Media stream bridge closed streamSid=%s callSid=%s",
             state.stream_sid,

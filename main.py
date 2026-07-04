@@ -82,7 +82,7 @@ def get_cors_origins():
 # Database + models
 # -------------------------------------------------
 from database import Base, engine, SessionLocal, get_db
-from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding, BillingCheckoutSession, WidgetSettings, AppointmentRequest, BusinessSettings
+from models import User, Business, MessageLog, Conversation, Payment, ReportRun, KnowledgeFile, KnowledgeEmbedding, BillingCheckoutSession, WidgetSettings, AppointmentRequest, BusinessSettings, VoiceCallLog
 Base.metadata.create_all(bind=engine)
 
 # -------------------------------------------------
@@ -169,6 +169,19 @@ from trial_protection_utils import (
     record_trial_enrollment,
     strip_subscription_trial,
 )
+from plan_utils import (
+    normalize_plan_type,
+    plan_type_from_stripe_price,
+    require_chatbot_access,
+    require_voicebot_access,
+    serialize_subscription,
+    user_has_chatbot,
+    user_has_voicebot,
+    user_plan_type,
+)
+from voice_settings_utils import get_voice_settings, update_voice_settings
+from voice_call_utils import get_voice_call_history
+from voice_subscription_utils import cancel_voicebot_subscription
 
 # -------------------------------------------------
 # Stripe setup
@@ -293,6 +306,16 @@ def ensure_business_settings_schema():
                 )
             )
 
+        voice_columns = {
+            ("voice_tone", "ADD COLUMN voice_tone TEXT DEFAULT 'friendly'"),
+            ("voice_custom_instructions", "ADD COLUMN voice_custom_instructions TEXT DEFAULT ''"),
+            ("voice_spell_name", "ADD COLUMN voice_spell_name INTEGER DEFAULT 0"),
+            ("voice_greeting", "ADD COLUMN voice_greeting TEXT DEFAULT ''"),
+        }
+        for column_name, ddl in voice_columns:
+            if column_name not in columns:
+                connection.execute(text(f"ALTER TABLE business_settings {ddl}"))
+
 
 def ensure_user_stripe_schema():
     if engine.dialect.name != "sqlite":
@@ -354,6 +377,11 @@ def ensure_user_stripe_schema():
                 text("ALTER TABLE users ADD COLUMN review_request_email_sent_at TEXT")
             )
 
+        if "plan_type" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN plan_type TEXT DEFAULT 'chatbot'")
+            )
+
 
 def ensure_user_password_reset_schema():
     ensure_user_stripe_schema()
@@ -373,6 +401,13 @@ def ensure_referral_schema():
         if "referral_code" not in checkout_columns:
             connection.execute(
                 text("ALTER TABLE billing_checkout_sessions ADD COLUMN referral_code TEXT")
+            )
+        if "plan_type" not in checkout_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE billing_checkout_sessions "
+                    "ADD COLUMN plan_type TEXT DEFAULT 'chatbot'"
+                )
             )
 
         connection.execute(
@@ -528,6 +563,54 @@ def ensure_appointment_requests_schema():
         )
 
 
+def ensure_voice_call_schema():
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS voice_call_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL,
+                    call_sid TEXT,
+                    caller_number TEXT,
+                    transcript TEXT DEFAULT '',
+                    started_at TEXT,
+                    ended_at TEXT
+                )
+                """
+            )
+        )
+
+
+def grant_complimentary_voicebot_access():
+    db = SessionLocal()
+    try:
+        from plan_utils import COMPLIMENTARY_VOICE_EMAILS, PLAN_VOICEBOT
+
+        updated = 0
+        for email in COMPLIMENTARY_VOICE_EMAILS:
+            user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
+            if not user:
+                logger.warning("Complimentary voice user not found: %s", email)
+                continue
+            user.plan_type = PLAN_VOICEBOT
+            user.subscription_active = 1
+            user.billing_status = "active"
+            db.add(user)
+            updated += 1
+        if updated:
+            db.commit()
+            logger.info("Granted complimentary voicebot access to %s user(s)", updated)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Failed to grant complimentary voicebot access")
+    finally:
+        db.close()
+
+
 ensure_business_settings_schema()
 ensure_user_password_reset_schema()
 ensure_referral_schema()
@@ -536,10 +619,12 @@ ensure_business_phone_schema()
 ensure_widget_settings_schema()
 ensure_trial_enrollment_schema()
 ensure_appointment_requests_schema()
+ensure_voice_call_schema()
 apply_admin_email_allowlist()
 backfill_billing_for_legacy_accounts()
 backfill_referral_codes()
 backfill_registered_at_on_startup()
+grant_complimentary_voicebot_access()
 
 # -------------------------------------------------
 # Request models
@@ -580,6 +665,7 @@ class SignupRequest(BaseModel):
 class CreateCheckoutSessionRequest(BaseModel):
     referral_code: str | None = None
     device_fingerprint: str | None = None
+    plan_type: str | None = "chatbot"
 
 class LoginRequest(BaseModel):
     email: str
@@ -799,6 +885,9 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         "token_type": "bearer",
         "user_id": user_id,
         "subscription_active": subscription_active,
+        "plan_type": user_plan_type(user),
+        "has_chatbot": user_has_chatbot(user),
+        "has_voicebot": user_has_voicebot(user),
         "role": role,
         "business_role": business_role,
         "account_role": business_role,
@@ -1167,6 +1256,9 @@ def client_dashboard(
     db: Session = Depends(get_db),
 ):
     require_role_guard(user, ["owner", "admin", "staff"])
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_chatbot_access(user)
     business = get_client_business(db, user)
     since = (datetime.utcnow() - timedelta(hours=24)).isoformat()
 
@@ -1440,6 +1532,97 @@ def client_referral_stats(
     return get_referral_stats(db, user)
 
 
+@app.get("/client/subscription")
+def client_subscription(
+    user=Depends(get_current_user),
+):
+    require_subscription(user)
+    return serialize_subscription(user)
+
+
+@app.get("/client/voicebot/dashboard")
+def client_voicebot_dashboard(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_voicebot_access(user)
+    business = get_client_business(db, user)
+    calls = get_voice_call_history(business.id, limit=100)
+    return {
+        "business": {
+            "id": business.id,
+            "name": business.name,
+            "folder_name": business.folder_name,
+            "phone": business.phone,
+        },
+        "subscription": serialize_subscription(user),
+        "analytics": {
+            "total_calls": len(calls),
+            "latest_call_at": calls[0]["started_at"] if calls else None,
+        },
+    }
+
+
+@app.get("/client/voicebot_settings")
+def get_client_voicebot_settings(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_voicebot_access(user)
+    business = get_client_business(db, user)
+    return get_voice_settings(business.id)
+
+
+@app.post("/client/voicebot_settings")
+def save_client_voicebot_settings(
+    data: dict,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_voicebot_access(user)
+    business = get_client_business(db, user)
+    return update_voice_settings(business.id, data)
+
+
+@app.get("/client/voice_call_history")
+def client_voice_call_history(
+    limit: int = 50,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_voicebot_access(user)
+    business = get_client_business(db, user)
+    return {
+        "business_id": business.id,
+        "calls": get_voice_call_history(business.id, limit=limit),
+    }
+
+
+@app.post("/client/voicebot/cancel")
+def cancel_client_voicebot_service(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if user.role != "owner" and not user_is_platform_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_voicebot_access(user)
+    return cancel_voicebot_subscription(db, user)
+
+
 @app.post("/create-customer-portal-session")
 def create_customer_portal_session_endpoint(
     user=Depends(get_current_user),
@@ -1700,6 +1883,8 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
         user.role = user.role or "owner"
         user.billing_status = "active"
         user.subscription_active = 1
+        user.plan_type = normalize_plan_type(checkout_record.plan_type)
+        user.plan_type = normalize_plan_type(checkout_record.plan_type)
     else:
         user = User(
             email=email,
@@ -1707,6 +1892,7 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
             subscription_active=1,
             billing_status="active",
             role="owner",
+            plan_type=normalize_plan_type(checkout_record.plan_type),
         )
         db.add(user)
 
@@ -2071,11 +2257,13 @@ def create_checkout_session_post(
 ):
     referral_code = req.referral_code if req else None
     device_fingerprint = req.device_fingerprint if req else None
+    plan_type = req.plan_type if req else "chatbot"
     return create_billing_first_checkout_session(
         db,
         referral_code=referral_code,
         device_fingerprint=device_fingerprint,
         ip_address=get_client_ip(request),
+        plan_type=plan_type,
     )
 
 
@@ -2146,6 +2334,21 @@ async def stripe_webhook(
             if user:
                 user.subscription_active = 1
                 user.billing_status = "active"
+                metadata = data.get("metadata") or {}
+                if metadata.get("plan_type"):
+                    user.plan_type = normalize_plan_type(metadata.get("plan_type"))
+                elif data.get("subscription"):
+                    try:
+                        subscription = stripe.Subscription.retrieve(data.get("subscription"))
+                        items = (subscription.get("items") or {}).get("data") or []
+                        if items:
+                            resolved = plan_type_from_stripe_price(
+                                items[0].get("price", {}).get("id")
+                            )
+                            if resolved:
+                                user.plan_type = resolved
+                    except stripe.error.StripeError:
+                        logger.warning("Unable to resolve plan_type from checkout webhook")
                 if data.get("customer"):
                     user.stripe_customer_id = data.get("customer")
                 db.commit()

@@ -1,6 +1,8 @@
+import json
+
 from database import SessionLocal
 from models import BusinessSettings
-from appointment_utils import APPOINTMENT_KNOWLEDGE_LINE, seed_appointment_knowledge
+from appointment_utils import seed_appointment_knowledge
 
 
 def _parse_faq_items(raw_faq_items):

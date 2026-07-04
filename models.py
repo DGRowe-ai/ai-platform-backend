@@ -19,6 +19,9 @@ class User(Base):
     # Subscription status
     subscription_active = Column(Integer, default=0)
 
+    # Product plan: chatbot, voicebot, duo
+    plan_type = Column(String, default="chatbot")
+
     # Stripe billing
     stripe_customer_id = Column(String, nullable=True, index=True)
     billing_status = Column(String, default="inactive")
@@ -148,6 +151,10 @@ class BusinessSettings(Base):
     appointment_notification_method = Column(String, default="email")
     appointment_notification_email = Column(String, nullable=True)
     appointment_webhook_url = Column(String, nullable=True)
+    voice_tone = Column(String, default="friendly")
+    voice_custom_instructions = Column(Text, default="")
+    voice_spell_name = Column(Integer, default=0)
+    voice_greeting = Column(Text, default="")
 
 
 # ============================
@@ -267,7 +274,23 @@ class BillingCheckoutSession(Base):
     billing_status = Column(String, default="pending")
     used = Column(Integer, default=0)
     referral_code = Column(String, nullable=True, index=True)
+    plan_type = Column(String, default="chatbot")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ============================
+# VOICE CALL LOGS
+# ============================
+class VoiceCallLog(Base):
+    __tablename__ = "voice_call_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), index=True)
+    call_sid = Column(String, index=True)
+    caller_number = Column(String, nullable=True)
+    transcript = Column(Text, default="")
+    started_at = Column(DateTime, default=datetime.utcnow)
+    ended_at = Column(DateTime, nullable=True)
 
 
 # ============================

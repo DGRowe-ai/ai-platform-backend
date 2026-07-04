@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 from auth_utils import normalize_email
 from business_utils import get_business_by_key
 from models import BillingCheckoutSession, User
+from plan_utils import (
+    PLAN_CHATBOT,
+    get_stripe_price_id_for_plan,
+    normalize_plan_type,
+    plan_type_from_stripe_price,
+)
 from trial_protection_utils import check_trial_eligibility
 
 logger = logging.getLogger(__name__)
@@ -34,17 +40,8 @@ def get_frontend_public_url() -> str:
 
 
 def get_stripe_price_id() -> str:
-    price_id = (
-        os.getenv("STRIPE_PRICE_ID")
-        or os.getenv("STRIPE_SUBSCRIPTION_PRICE_ID")
-        or os.getenv("STRIPE_PRICE")
-    )
-    if not price_id:
-        raise HTTPException(
-            status_code=503,
-            detail="Stripe subscription price is not configured",
-        )
-    return price_id
+    """Backward-compatible default chatbot price lookup."""
+    return get_stripe_price_id_for_plan(PLAN_CHATBOT)
 
 
 def get_trial_period_days() -> int:
@@ -145,6 +142,20 @@ def upsert_billing_checkout_session(db: Session, session: dict) -> BillingChecko
     referral_code = metadata.get("referral_code")
     if referral_code:
         record.referral_code = referral_code.strip()
+    plan_type = metadata.get("plan_type")
+    if plan_type:
+        record.plan_type = normalize_plan_type(plan_type)
+    elif session.get("subscription"):
+        try:
+            subscription = stripe.Subscription.retrieve(session.get("subscription"))
+            items = (subscription.get("items") or {}).get("data") or []
+            if items:
+                price_id = items[0].get("price", {}).get("id")
+                resolved = plan_type_from_stripe_price(price_id)
+                if resolved:
+                    record.plan_type = resolved
+        except stripe.error.StripeError:
+            logger.warning("Unable to resolve plan_type from checkout subscription")
     if not record.created_at:
         record.created_at = datetime.utcnow()
 
@@ -159,6 +170,7 @@ def create_billing_first_checkout_session(
     referral_code: str | None = None,
     device_fingerprint: str | None = None,
     ip_address: str | None = None,
+    plan_type: str | None = PLAN_CHATBOT,
 ) -> dict:
     if not stripe.api_key:
         raise HTTPException(
@@ -174,10 +186,11 @@ def create_billing_first_checkout_session(
     trial_eligible = trial_result.eligible
 
     frontend_url = get_frontend_public_url()
-    price_id = get_stripe_price_id()
+    resolved_plan = normalize_plan_type(plan_type)
+    price_id = get_stripe_price_id_for_plan(resolved_plan)
     trial_days = get_trial_period_days() if trial_eligible else 0
 
-    metadata = {}
+    metadata = {"plan_type": resolved_plan}
     if referral_code:
         metadata["referral_code"] = referral_code.strip()
     if device_fingerprint:
