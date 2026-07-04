@@ -15,6 +15,8 @@ from starlette.websockets import WebSocketState
 logger = logging.getLogger(__name__)
 
 DEFAULT_REALTIME_MODEL = "gpt-realtime"
+DEFAULT_REALTIME_MINI_MODEL = "gpt-realtime-mini"
+DEPRECATED_REALTIME_MODEL_MARKERS = ("realtime-preview",)
 DEFAULT_REALTIME_VOICE = "shimmer"
 DEFAULT_REALTIME_TEMPERATURE = 0.8
 DEFAULT_INSTRUCTIONS = (
@@ -61,8 +63,34 @@ def build_unavailable_twiml(message: str) -> str:
 </Response>"""
 
 
+def _resolve_realtime_model(configured: str) -> str:
+    """Map deprecated preview model IDs to current GA Realtime models."""
+    raw = configured.strip()
+    if not raw:
+        return DEFAULT_REALTIME_MODEL
+
+    normalized = raw.lower()
+    if any(marker in normalized for marker in DEPRECATED_REALTIME_MODEL_MARKERS):
+        replacement = (
+            DEFAULT_REALTIME_MINI_MODEL
+            if "mini" in normalized
+            else DEFAULT_REALTIME_MODEL
+        )
+        if normalized != replacement.lower():
+            logger.warning(
+                "REALTIME_MODEL=%s is deprecated or unavailable; using %s instead. "
+                "Update REALTIME_MODEL on Render to avoid this warning.",
+                raw,
+                replacement,
+            )
+        return replacement
+
+    return raw
+
+
 def _realtime_model() -> str:
-    return os.getenv("REALTIME_MODEL", DEFAULT_REALTIME_MODEL).strip()
+    configured = os.getenv("REALTIME_MODEL", DEFAULT_REALTIME_MODEL)
+    return _resolve_realtime_model(configured)
 
 
 def _realtime_voice() -> str:
@@ -321,6 +349,23 @@ async def handle_twilio_openai_media_stream(twilio_ws: WebSocket) -> None:
             )
     except WebSocketDisconnect:
         logger.info("Twilio media call ended streamSid=%s", state.stream_sid)
+    except websockets.ConnectionClosedError as exc:
+        reason = exc.reason or ""
+        if "model_not_found" in reason:
+            configured = os.getenv("REALTIME_MODEL", DEFAULT_REALTIME_MODEL)
+            logger.error(
+                "OpenAI Realtime model not found (REALTIME_MODEL=%s). "
+                "Set REALTIME_MODEL to gpt-realtime or gpt-realtime-mini on Render, "
+                "or remove it to use the default. OpenAI reason: %s",
+                configured,
+                reason,
+            )
+        else:
+            logger.exception(
+                "OpenAI Realtime WebSocket closed during setup streamSid=%s callSid=%s",
+                state.stream_sid,
+                state.call_sid,
+            )
     except Exception:
         logger.exception(
             "Twilio/OpenAI media bridge failed streamSid=%s callSid=%s",

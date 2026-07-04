@@ -4,6 +4,7 @@ from twilio_realtime_bridge import (
     build_voice_twiml,
     get_media_stream_wss_url,
     _openai_realtime_uri,
+    _resolve_realtime_model,
 )
 
 
@@ -29,6 +30,26 @@ class TwilioRealtimeBridgeTests(unittest.TestCase):
         os.environ.pop("REALTIME_MODEL", None)
         uri = _openai_realtime_uri()
         self.assertIn("model=gpt-realtime", uri)
+
+    def test_deprecated_preview_model_maps_to_ga(self):
+        self.assertEqual(
+            _resolve_realtime_model("gpt-4o-mini-realtime-preview"),
+            "gpt-realtime-mini",
+        )
+        self.assertEqual(
+            _resolve_realtime_model("gpt-4o-realtime-preview-2024-12-17"),
+            "gpt-realtime",
+        )
+
+    def test_realtime_uri_remaps_deprecated_env_model(self):
+        import os
+
+        os.environ["REALTIME_MODEL"] = "gpt-4o-mini-realtime-preview"
+        try:
+            uri = _openai_realtime_uri()
+            self.assertIn("model=gpt-realtime-mini", uri)
+        finally:
+            os.environ.pop("REALTIME_MODEL", None)
 
 
 if __name__ == "__main__":
