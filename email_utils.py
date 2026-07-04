@@ -346,6 +346,86 @@ Thanks for choosing Rowe AI!
     )
 
 
+def send_voicebot_welcome_email(*, to_email: str, client_name: str) -> None:
+    body = f"""Hi {client_name},
+
+Welcome to Rowe AI Voicebot! Your AI phone receptionist is officially active and ready to start handling your calls.
+
+To get started, please visit your Voicebot Dashboard:
+https://ai-platform-frontend-uaaa.onrender.com/login-voicebot.html
+
+Inside your dashboard, you can:
+• Enter your Business Phone Number
+• Set your Voicebot personality
+• Add your business knowledge (hours, pricing, FAQs)
+• Configure name spelling
+• Follow the Call Forwarding Setup instructions
+
+Once you forward your business phone number to your AI receptionist, the bot will begin answering calls immediately.
+
+If you need help, contact us anytime:
+support@roweai.ca
+226-343-9977
+
+Welcome aboard — your AI receptionist is ready to work.
+
+Rowe AI Team
+"""
+
+    send_email(
+        to_email=to_email,
+        subject="Welcome to Rowe AI Voicebot — Your AI Phone Receptionist Is Ready",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
+    )
+
+
+def send_duo_welcome_email(*, to_email: str, client_name: str) -> None:
+    body = f"""Hi {client_name},
+
+Welcome to Rowe AI Duo! Both your AI website chatbot and your AI phone receptionist are now active.
+
+You can access your dashboards here:
+
+Voicebot Dashboard:
+https://ai-platform-frontend-uaaa.onrender.com/login-voicebot.html
+
+Chatbot Dashboard:
+https://ai-platform-frontend-uaaa.onrender.com/login-chatbot.html
+
+Please visit both dashboards to set up your bots:
+
+VOICEBOT SETUP:
+• Enter your Business Phone Number
+• Set your Voicebot personality
+• Add your business knowledge (hours, pricing, FAQs)
+• Configure name spelling
+• Follow the Call Forwarding Setup instructions
+Once forwarding is enabled, your AI receptionist will begin answering calls immediately.
+
+CHATBOT SETUP:
+• Customize your chatbot script
+• Add knowledge base content
+• Install your widget on your website
+• Adjust appearance and behavior
+
+If you need help, contact us anytime:
+support@roweai.ca
+226-343-9977
+
+Welcome to Rowe AI Duo — your business now has full AI coverage.
+
+Rowe AI Team
+"""
+
+    send_email(
+        to_email=to_email,
+        subject="Welcome to Rowe AI Duo — Your Chatbot & Voicebot Are Ready",
+        body=body,
+        from_email=PASSWORD_RESET_SENDER,
+    )
+
+
 def send_referred_user_welcome_email(
     *,
     to_email: str,

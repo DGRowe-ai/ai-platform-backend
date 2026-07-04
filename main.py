@@ -178,6 +178,11 @@ from plan_utils import (
     user_has_chatbot,
     user_has_voicebot,
     user_plan_type,
+    PLAN_CHATBOT,
+)
+from plan_welcome_email_utils import (
+    send_product_welcome_emails_if_needed,
+    should_send_chatbot_welcome_email,
 )
 from voice_settings_utils import get_voice_settings, update_voice_settings
 from voice_call_utils import get_voice_call_history
@@ -311,6 +316,7 @@ def ensure_business_settings_schema():
             ("voice_custom_instructions", "ADD COLUMN voice_custom_instructions TEXT DEFAULT ''"),
             ("voice_spell_name", "ADD COLUMN voice_spell_name INTEGER DEFAULT 0"),
             ("voice_greeting", "ADD COLUMN voice_greeting TEXT DEFAULT ''"),
+            ("voice_business_phone", "ADD COLUMN voice_business_phone TEXT DEFAULT ''"),
         }
         for column_name, ddl in voice_columns:
             if column_name not in columns:
@@ -380,6 +386,16 @@ def ensure_user_stripe_schema():
         if "plan_type" not in columns:
             connection.execute(
                 text("ALTER TABLE users ADD COLUMN plan_type TEXT DEFAULT 'chatbot'")
+            )
+
+        if "voicebot_welcome_email_sent_at" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN voicebot_welcome_email_sent_at TEXT")
+            )
+
+        if "duo_welcome_email_sent_at" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN duo_welcome_email_sent_at TEXT")
             )
 
 
@@ -1590,7 +1606,40 @@ def save_client_voicebot_settings(
     if not user_is_platform_admin(user):
         require_voicebot_access(user)
     business = get_client_business(db, user)
-    return update_voice_settings(business.id, data)
+    try:
+        return update_voice_settings(business.id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/voicebot/settings")
+def get_voicebot_settings(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_voicebot_access(user)
+    business = get_client_business(db, user)
+    return get_voice_settings(business.id)
+
+
+@app.post("/voicebot/settings")
+def save_voicebot_settings(
+    data: dict,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role_guard(user, ["owner", "admin", "staff"])
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_voicebot_access(user)
+    business = get_client_business(db, user)
+    try:
+        return update_voice_settings(business.id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/client/voice_call_history")
@@ -1984,17 +2033,27 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
 ></script>"""
     referral_link = build_referral_link(user.referral_code)
 
+    if should_send_chatbot_welcome_email(user):
+        try:
+            send_welcome_email_with_referral(
+                to_email=user.email,
+                business_name=req.business_name,
+                chatbot_link=chatbot_link,
+                dashboard_link=test_dashboard_link,
+                embed_code=embed_code,
+                referral_link=referral_link,
+            )
+        except Exception:
+            logger.exception("Failed to send signup email for user_id=%s", user.id)
+
     try:
-        send_welcome_email_with_referral(
-            to_email=user.email,
-            business_name=req.business_name,
-            chatbot_link=chatbot_link,
-            dashboard_link=test_dashboard_link,
-            embed_code=embed_code,
-            referral_link=referral_link,
+        send_product_welcome_emails_if_needed(
+            db,
+            user,
+            client_name=req.business_name,
         )
     except Exception:
-        logger.exception("Failed to send signup email for user_id=%s", user.id)
+        logger.exception("Failed to send product welcome email for user_id=%s", user.id)
 
     if referrer:
         try:
@@ -2352,6 +2411,14 @@ async def stripe_webhook(
                 if data.get("customer"):
                     user.stripe_customer_id = data.get("customer")
                 db.commit()
+                db.refresh(user)
+                try:
+                    send_product_welcome_emails_if_needed(db, user)
+                except Exception:
+                    logger.exception(
+                        "Failed to send product welcome email for user_id=%s",
+                        user.id,
+                    )
                 log_event(
                     user_id=user.id,
                     event_type="subscription_activated",

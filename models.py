@@ -47,6 +47,9 @@ class User(Base):
     registered_at = Column(DateTime, nullable=True)
     review_request_email_sent_at = Column(DateTime, nullable=True)
 
+    voicebot_welcome_email_sent_at = Column(DateTime, nullable=True)
+    duo_welcome_email_sent_at = Column(DateTime, nullable=True)
+
     # Relationship to businesses
     businesses = relationship(
         "Business",
@@ -155,6 +158,7 @@ class BusinessSettings(Base):
     voice_custom_instructions = Column(Text, default="")
     voice_spell_name = Column(Integer, default=0)
     voice_greeting = Column(Text, default="")
+    voice_business_phone = Column(String, default="")
 
 
 # ============================

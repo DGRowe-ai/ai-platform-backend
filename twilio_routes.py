@@ -26,18 +26,21 @@ async def twilio_voice_webhook(request: Request):
     call_sid = None
     caller_number = None
     to_number = None
+    forwarded_from = None
 
     try:
         form = await request.form()
         call_sid = form.get("CallSid")
         caller_number = form.get("From")
         to_number = form.get("To")
+        forwarded_from = form.get("ForwardedFrom")
         if call_sid:
             logger.info(
-                "Twilio /voice webhook CallSid=%s From=%s To=%s",
+                "Twilio /voice webhook CallSid=%s From=%s To=%s ForwardedFrom=%s",
                 call_sid,
                 caller_number,
                 to_number,
+                forwarded_from,
             )
         else:
             logger.info("Twilio /voice webhook received")
@@ -53,7 +56,12 @@ async def twilio_voice_webhook(request: Request):
 
     business_id = None
     with SessionLocal() as db:
-        business = find_business_for_inbound_call(db, to_number)
+        business = find_business_for_inbound_call(
+            db,
+            to_number=to_number,
+            from_number=caller_number,
+            forwarded_from=forwarded_from,
+        )
         if business:
             business_id = business.id
             logger.info(

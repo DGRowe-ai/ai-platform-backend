@@ -276,7 +276,7 @@ def _load_business_voice_instructions(business_id: int | None) -> str | None:
     try:
         from database import SessionLocal
         from knowledge_utils import retrieve_knowledge_context
-        from models import BusinessSettings
+        from models import Business, BusinessSettings
         from voice_settings_utils import build_voice_realtime_instructions
 
         with SessionLocal() as db:
@@ -285,12 +285,17 @@ def _load_business_voice_instructions(business_id: int | None) -> str | None:
             )
             if not settings:
                 return None
+            business = db.query(Business).filter(Business.id == business_id).first()
             knowledge_context = retrieve_knowledge_context(
                 db,
                 business_id,
                 "business phone receptionist knowledge",
             )
-            return build_voice_realtime_instructions(settings, knowledge_context)
+            return build_voice_realtime_instructions(
+                settings,
+                knowledge_context,
+                business_name=(business.name if business else ""),
+            )
     except Exception:
         logger.exception("Unable to load voice instructions for business_id=%s", business_id)
         return None
