@@ -69,6 +69,13 @@ async def twilio_voice_webhook(request: Request):
                 business.id,
                 business.folder_name,
             )
+        else:
+            logger.warning(
+                "No business matched for inbound call From=%s ForwardedFrom=%s To=%s",
+                caller_number,
+                forwarded_from,
+                to_number,
+            )
 
     stream_url = get_media_stream_wss_url()
     logger.info("Starting Twilio media stream at %s", stream_url)

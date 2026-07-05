@@ -251,3 +251,28 @@ def retrieve_knowledge_context(db: Session, client_id: int, query: str, top_k: i
     scored.sort(key=lambda item: item[0], reverse=True)
     selected = [chunk for _, chunk in scored[:top_k] if chunk]
     return "\n\n".join(selected)
+
+
+def retrieve_voice_knowledge_context(db: Session, client_id: int, max_chunks: int = 25) -> str:
+    """Load uploaded knowledge for voice calls without relying on a live caller query."""
+    rows = (
+        db.query(KnowledgeEmbedding)
+        .filter(KnowledgeEmbedding.client_id == client_id)
+        .order_by(KnowledgeEmbedding.id.asc())
+        .all()
+    )
+    if not rows:
+        return ""
+
+    chunks: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        text = (row.chunk_text or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        chunks.append(text)
+        if len(chunks) >= max_chunks:
+            break
+
+    return "\n\n".join(chunks)

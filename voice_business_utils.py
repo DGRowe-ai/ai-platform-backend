@@ -47,7 +47,7 @@ def find_business_for_inbound_call(
     forwarded_from: str | None = None,
 ) -> Business | None:
     """Identify the business for a forwarded Twilio call."""
-    lookup_numbers = [forwarded_from, from_number, to_number]
+    lookup_numbers = [forwarded_from, from_number]
     for raw_number in lookup_numbers:
         if not raw_number:
             continue
@@ -61,14 +61,28 @@ def find_business_for_inbound_call(
             )
             return business
 
+    if forwarded_from:
+        logger.warning(
+            "No business matched ForwardedFrom=%s; voice settings will not load",
+            forwarded_from,
+        )
+    elif from_number:
+        logger.warning(
+            "Inbound call From=%s with no ForwardedFrom. "
+            "Save your business phone in the Voicebot dashboard and forward that number to Twilio.",
+            from_number,
+        )
+
     default_key = (os.getenv("DEFAULT_VOICE_BUSINESS_ID") or "").strip()
     if default_key:
         if default_key.isdigit():
             business = db.query(Business).filter(Business.id == int(default_key)).first()
             if business:
+                logger.info("Using DEFAULT_VOICE_BUSINESS_ID business_id=%s", business.id)
                 return business
         business = db.query(Business).filter(Business.folder_name == default_key).first()
         if business:
+            logger.info("Using DEFAULT_VOICE_BUSINESS_ID folder=%s", business.folder_name)
             return business
 
-    return db.query(Business).order_by(Business.id.asc()).first()
+    return None

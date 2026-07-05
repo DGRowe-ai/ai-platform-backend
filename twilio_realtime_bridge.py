@@ -275,7 +275,7 @@ def _load_business_voice_instructions(business_id: int | None) -> str | None:
 
     try:
         from database import SessionLocal
-        from knowledge_utils import retrieve_knowledge_context
+        from knowledge_utils import retrieve_voice_knowledge_context
         from models import Business, BusinessSettings
         from voice_settings_utils import build_voice_realtime_instructions
 
@@ -284,21 +284,43 @@ def _load_business_voice_instructions(business_id: int | None) -> str | None:
                 db.query(BusinessSettings).filter_by(business_id=business_id).first()
             )
             if not settings:
+                logger.warning("No business_settings row for business_id=%s", business_id)
                 return None
             business = db.query(Business).filter(Business.id == business_id).first()
-            knowledge_context = retrieve_knowledge_context(
-                db,
-                business_id,
-                "business phone receptionist knowledge",
-            )
-            return build_voice_realtime_instructions(
+            knowledge_context = retrieve_voice_knowledge_context(db, business_id)
+            instructions = build_voice_realtime_instructions(
                 settings,
                 knowledge_context,
                 business_name=(business.name if business else ""),
             )
+            logger.info(
+                "Loaded voice instructions business_id=%s custom_chars=%s knowledge_chars=%s total_chars=%s",
+                business_id,
+                len((settings.voice_custom_instructions or "").strip()),
+                len(knowledge_context),
+                len(instructions),
+            )
+            return instructions
     except Exception:
         logger.exception("Unable to load voice instructions for business_id=%s", business_id)
         return None
+
+
+async def _apply_business_voice_session(
+    openai_ws: websockets.WebSocketClientProtocol,
+    state: StreamState,
+) -> bool:
+    """Load business settings into the OpenAI session once Twilio identifies the business."""
+    if not state.business_id:
+        return False
+
+    instructions = _load_business_voice_instructions(state.business_id)
+    if not instructions:
+        return False
+
+    state.instructions = instructions
+    await _configure_openai_session(openai_ws, instructions)
+    return True
 
 
 async def _receive_from_twilio(
@@ -348,6 +370,15 @@ async def _receive_from_twilio(
                             state.business_id,
                         )
                 await _flush_pending_audio(twilio_ws, state)
+
+                if state.business_id and _openai_ws_open(openai_ws):
+                    applied = await _apply_business_voice_session(openai_ws, state)
+                    if not applied:
+                        logger.warning(
+                            "Voice settings were not applied for business_id=%s",
+                            state.business_id,
+                        )
+
                 if not state.greeted and _openai_ws_open(openai_ws):
                     state.greeted = True
                     await _request_initial_greeting(openai_ws)
@@ -450,12 +481,17 @@ async def handle_twilio_openai_media_stream(
     state = StreamState()
     state.business_id = business_id
     state.caller_number = caller_number
-    state.instructions = _load_business_voice_instructions(business_id)
 
     try:
         async with _openai_connect(openai_uri, headers) as openai_ws:
             logger.info("Connected to OpenAI Realtime uri=%s", openai_uri)
-            await _configure_openai_session(openai_ws, state.instructions)
+            bootstrap_instructions = (
+                _load_business_voice_instructions(business_id)
+                if business_id
+                else None
+            )
+            await _configure_openai_session(openai_ws, bootstrap_instructions)
+            state.instructions = bootstrap_instructions
             await asyncio.gather(
                 _receive_from_twilio(twilio_ws, openai_ws, state),
                 _send_to_twilio(twilio_ws, openai_ws, state),
