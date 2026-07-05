@@ -185,7 +185,7 @@ from plan_welcome_email_utils import (
     should_send_chatbot_welcome_email,
 )
 from voice_settings_utils import get_voice_settings, update_voice_settings
-from voice_call_utils import get_voice_call_history
+from voice_call_utils import delete_voice_call_history, get_voice_call_history
 from voice_subscription_utils import cancel_voicebot_subscription
 
 # -------------------------------------------------
@@ -1658,6 +1658,21 @@ def client_voice_call_history(
         "business_id": business.id,
         "calls": get_voice_call_history(business.id, limit=limit),
     }
+
+
+@app.delete("/client/voice_call_history")
+def delete_client_voice_call_history(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if user.role != "owner" and not user_is_platform_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    require_subscription(user)
+    if not user_is_platform_admin(user):
+        require_voicebot_access(user)
+    business = get_client_business(db, user)
+    deleted = delete_voice_call_history(business.id)
+    return {"status": "deleted", "deleted_count": deleted}
 
 
 @app.post("/client/voicebot/cancel")

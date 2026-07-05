@@ -8,14 +8,23 @@ from database import SessionLocal
 from models import VoiceCallLog
 
 
+def _iso_utc(dt: datetime | None) -> str | None:
+    if not dt:
+        return None
+    value = dt.isoformat()
+    if value.endswith("Z") or "+" in value:
+        return value
+    return f"{value}Z"
+
+
 def serialize_voice_call(log: VoiceCallLog) -> dict:
     return {
         "id": log.id,
         "call_sid": log.call_sid,
         "caller_number": log.caller_number or "",
         "transcript": log.transcript or "",
-        "started_at": log.started_at.isoformat() if log.started_at else None,
-        "ended_at": log.ended_at.isoformat() if log.ended_at else None,
+        "started_at": _iso_utc(log.started_at),
+        "ended_at": _iso_utc(log.ended_at),
     }
 
 
@@ -44,7 +53,8 @@ def append_voice_call_transcript(call_log_id: int, role: str, text: str) -> None
         return
 
     prefix = "Caller" if role == "user" else "Assistant"
-    line = f"{prefix}: {cleaned}"
+    timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = f"[{timestamp}] {prefix}: {cleaned}"
 
     with SessionLocal() as db:
         log = db.query(VoiceCallLog).filter(VoiceCallLog.id == call_log_id).first()
@@ -79,3 +89,14 @@ def get_voice_call_history(business_id: int, limit: int = 50) -> list[dict]:
             .all()
         )
         return [serialize_voice_call(log) for log in logs]
+
+
+def delete_voice_call_history(business_id: int) -> int:
+    with SessionLocal() as db:
+        deleted = (
+            db.query(VoiceCallLog)
+            .filter(VoiceCallLog.business_id == business_id)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        return deleted

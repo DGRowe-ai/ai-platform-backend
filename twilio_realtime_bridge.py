@@ -161,6 +161,7 @@ async def _configure_openai_session(
                 "input": {
                     "format": {"type": "audio/pcmu"},
                     "turn_detection": {"type": "server_vad"},
+                    "transcription": {"model": "gpt-4o-mini-transcribe"},
                 },
                 "output": {
                     "format": {"type": "audio/pcmu"},
@@ -253,11 +254,35 @@ async def _flush_pending_audio(twilio_ws: WebSocket, state: StreamState) -> None
 
 
 def _transcript_from_event(event: dict[str, Any]) -> tuple[str, str] | None:
-    event_type = event.get("type")
-    if event_type == "conversation.item.input_audio_transcription.completed":
-        transcript = event.get("transcript") or (event.get("item") or {}).get("transcript")
+    event_type = event.get("type", "")
+
+    if event_type in {
+        "conversation.item.input_audio_transcription.completed",
+        "input_audio_transcription.completed",
+    }:
+        transcript = event.get("transcript")
+        if not transcript:
+            item = event.get("item") or {}
+            transcript = item.get("transcript")
+            if not transcript:
+                for part in item.get("content") or []:
+                    if isinstance(part, dict):
+                        transcript = part.get("transcript") or part.get("text")
+                        if transcript:
+                            break
         if transcript:
-            return "user", transcript
+            return "user", str(transcript).strip()
+
+    if event_type == "conversation.item.done":
+        item = event.get("item") or {}
+        if (item.get("role") or "").strip().lower() == "user":
+            for part in item.get("content") or []:
+                if not isinstance(part, dict):
+                    continue
+                transcript = part.get("transcript") or part.get("text")
+                if transcript:
+                    return "user", str(transcript).strip()
+
     if event_type in {
         "response.audio_transcript.done",
         "response.output_audio_transcript.done",
@@ -265,7 +290,20 @@ def _transcript_from_event(event: dict[str, Any]) -> tuple[str, str] | None:
     }:
         transcript = event.get("transcript")
         if transcript:
-            return "assistant", transcript
+            return "assistant", str(transcript).strip()
+
+    if event_type == "response.done":
+        response = event.get("response") or {}
+        for item in response.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            for part in item.get("content") or []:
+                if not isinstance(part, dict):
+                    continue
+                transcript = part.get("transcript") or part.get("text")
+                if transcript:
+                    return "assistant", str(transcript).strip()
+
     return None
 
 
