@@ -317,6 +317,7 @@ def ensure_business_settings_schema():
             ("voice_spell_name", "ADD COLUMN voice_spell_name INTEGER DEFAULT 0"),
             ("voice_greeting", "ADD COLUMN voice_greeting TEXT DEFAULT ''"),
             ("voice_business_phone", "ADD COLUMN voice_business_phone TEXT DEFAULT ''"),
+            ("voice_business_name", "ADD COLUMN voice_business_name TEXT DEFAULT ''"),
         }
         for column_name, ddl in voice_columns:
             if column_name not in columns:

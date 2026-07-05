@@ -16,6 +16,17 @@ SPELL_NAME_INSTRUCTION = (
     "so you can confirm you have it correct."
 )
 
+VOICE_INSTRUCTION_CHAR_WARN = 14000
+
+
+def _display_business_name(settings: BusinessSettings, business: Business | None) -> str:
+    configured = (getattr(settings, "voice_business_name", None) or "").strip()
+    if configured:
+        return configured
+    if business and business.name:
+        return business.name.strip()
+    return ""
+
 
 def _get_or_create_settings(db, business_id: int) -> BusinessSettings:
     settings = db.query(BusinessSettings).filter_by(business_id=business_id).first()
@@ -30,10 +41,15 @@ def _get_or_create_settings(db, business_id: int) -> BusinessSettings:
 
 def serialize_voice_settings(settings: BusinessSettings, business: Business | None = None) -> dict:
     phone = getattr(settings, "voice_business_phone", None) or ""
+    display_name = _display_business_name(settings, business)
     return {
         "business_id": settings.business_id,
         "businessPhoneNumber": phone,
         "business_phone_number": phone,
+        "businessName": display_name,
+        "business_name": display_name,
+        "voiceBusinessName": display_name,
+        "voice_business_name": display_name,
         "tone": settings.voice_tone or "friendly",
         "voice_tone": settings.voice_tone or "friendly",
         "custom_instructions": settings.voice_custom_instructions or "",
@@ -41,8 +57,6 @@ def serialize_voice_settings(settings: BusinessSettings, business: Business | No
         "spell_name": bool(getattr(settings, "voice_spell_name", 0)),
         "voice_spell_name": bool(getattr(settings, "voice_spell_name", 0)),
         "greeting_hint": settings.voice_greeting or DEFAULT_VOICE_GREETING,
-        "businessName": business.name if business else "",
-        "business_name": business.name if business else "",
     }
 
 
@@ -67,6 +81,14 @@ def update_voice_settings(business_id: int, data: dict) -> dict:
                     settings.voice_business_phone = normalize_business_phone(str(raw_phone))
                 except InvalidBusinessPhoneError as exc:
                     raise ValueError(str(exc)) from exc
+
+        if "businessName" in data or "voiceBusinessName" in data or "voice_business_name" in data:
+            raw_name = (
+                data.get("businessName")
+                or data.get("voiceBusinessName")
+                or data.get("voice_business_name")
+            )
+            settings.voice_business_name = (raw_name or "").strip()
 
         if "tone" in data or "voice_tone" in data:
             settings.voice_tone = (data.get("tone") or data.get("voice_tone") or "friendly").strip()
@@ -98,28 +120,63 @@ def build_voice_realtime_instructions(
     tone = (settings.voice_tone or "friendly").strip()
     custom = (settings.voice_custom_instructions or "").strip()
     greeting = (settings.voice_greeting or DEFAULT_VOICE_GREETING).strip()
-    name = (business_name or "").strip()
+    configured_name = (getattr(settings, "voice_business_name", None) or "").strip()
+    name = configured_name or (business_name or "").strip()
+
+    fact_sections: list[str] = []
+    if custom:
+        fact_sections.append(custom)
+    if knowledge_context:
+        uploaded = knowledge_context.strip()
+        if uploaded and uploaded not in custom:
+            fact_sections.append("Uploaded knowledge base files:\n" + uploaded)
+
+    business_facts = "\n\n".join(section for section in fact_sections if section).strip()
 
     parts = [
-        "You are a friendly, natural-sounding AI phone receptionist.",
+        "You are an AI phone receptionist.",
     ]
 
     if name:
-        parts.append(f"You are answering calls for {name}.")
+        parts.append(f'You answer calls for the company "{name}".')
+        parts.append(
+            f'The company name is exactly "{name}". Never shorten it, change it, or substitute a different name.'
+        )
 
     parts.extend([
-        f"Use a {tone} tone in every response.",
-        greeting,
-        "Keep answers concise and conversational for phone calls.",
+        "CRITICAL RULES — follow these on every response:",
+        "1. Speak only in English unless the caller explicitly asks for another language.",
+        "2. Use ONLY the BUSINESS FACTS section below for company details (hours, location, services, pricing, coverage area, etc.).",
+        "3. Do not guess, invent, or assume any business detail that is not explicitly stated in BUSINESS FACTS.",
+        '4. If asked something not covered in BUSINESS FACTS, say you do not have that information and offer to have someone follow up.',
+        "5. When BUSINESS FACTS lists multiple locations or coverage areas, mention all of them — do not omit any.",
+        f"6. Use a {tone} tone. Keep answers concise and natural for phone calls.",
     ])
 
-    if custom:
-        parts.append("Business knowledge and instructions:\n" + custom)
+    if business_facts:
+        parts.append("BUSINESS FACTS (your only source of truth):\n" + business_facts)
+    else:
+        parts.append(
+            "BUSINESS FACTS: No business facts are configured yet. "
+            "Tell callers you are still being set up and offer to have someone call them back."
+        )
 
-    if knowledge_context:
-        parts.append("Relevant knowledge base excerpts:\n" + knowledge_context)
+    if greeting:
+        parts.append("Call opening style:\n" + greeting)
 
     if getattr(settings, "voice_spell_name", 0):
         parts.append(SPELL_NAME_INSTRUCTION)
 
-    return "\n\n".join(part for part in parts if part)
+    instructions = "\n\n".join(part for part in parts if part)
+
+    if len(instructions) > VOICE_INSTRUCTION_CHAR_WARN:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Voice instructions are very long (%s chars) for business_id=%s; "
+            "consider shorter bullet points so all facts are followed reliably.",
+            len(instructions),
+            settings.business_id,
+        )
+
+    return instructions

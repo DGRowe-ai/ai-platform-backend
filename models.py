@@ -159,6 +159,7 @@ class BusinessSettings(Base):
     voice_spell_name = Column(Integer, default=0)
     voice_greeting = Column(Text, default="")
     voice_business_phone = Column(String, default="")
+    voice_business_name = Column(String, default="")
 
 
 # ============================
