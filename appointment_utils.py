@@ -13,8 +13,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from email_utils import send_appointment_confirmation_email, send_appointment_owner_notification
-from models import AppointmentRequest, Business, BusinessSettings, User
+from email_utils import send_appointment_confirmation_email
+from models import AppointmentRequest, Business, BusinessSettings
+from utils.appointment_email import send_appointment_email
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +90,56 @@ def get_business_settings_row(db: Session, business_id: int) -> BusinessSettings
 
 
 def serialize_appointment_settings(settings: BusinessSettings) -> dict:
+    owner_email = (settings.appointment_notification_email or "").strip()
     return {
         "timezone": settings.business_timezone or DEFAULT_TIMEZONE,
         "notification_method": settings.appointment_notification_method or "email",
-        "notification_email": settings.appointment_notification_email or "",
+        "notification_email": owner_email,
+        "ownerNotificationEmail": owner_email,
+        "owner_notification_email": owner_email,
         "webhook_url": settings.appointment_webhook_url or "",
     }
+
+
+def get_owner_notification_email(settings: BusinessSettings) -> str:
+    return (settings.appointment_notification_email or "").strip()
+
+
+def normalize_external_appointment_payload(data: dict) -> dict:
+    return {
+        "customer_name": (
+            data.get("customerName")
+            or data.get("customer_name")
+            or ""
+        ).strip(),
+        "customer_contact": (
+            data.get("customerPhone")
+            or data.get("customer_phone")
+            or data.get("customer_contact")
+            or ""
+        ).strip(),
+        "requested_date": (
+            data.get("requestedDate")
+            or data.get("requested_date")
+            or ""
+        ).strip(),
+        "requested_time": (
+            data.get("requestedTime")
+            or data.get("requested_time")
+            or ""
+        ).strip(),
+        "service": (data.get("service") or "").strip(),
+        "notes": (data.get("notes") or "").strip(),
+    }
+
+
+def appointment_email_payload(appointment: AppointmentRequest) -> dict:
+    data = serialize_appointment(appointment)
+    data["customerPhone"] = data.get("customer_contact", "")
+    data["customerName"] = data.get("customer_name", "")
+    data["requestedDate"] = data.get("requested_date", "")
+    data["requestedTime"] = data.get("requested_time", "")
+    return data
 
 
 def serialize_appointment(record: AppointmentRequest) -> dict:
@@ -218,10 +263,6 @@ def validate_appointment_payload(payload: dict, timezone_name: str | None) -> di
     }
 
 
-def get_owner_email(db: Session, business: Business) -> str | None:
-    owner = db.query(User).filter(User.id == business.owner_id).first()
-    return owner.email if owner else None
-
 
 def notify_client_of_appointment(
     db: Session,
@@ -267,21 +308,11 @@ def notify_client_of_appointment(
         return
 
     if method == "email":
-        recipient = (settings.appointment_notification_email or "").strip()
+        recipient = get_owner_notification_email(settings)
         if not recipient:
-            recipient = get_owner_email(db, business) or ""
-        if not recipient:
-            logger.warning(
-                "No appointment notification email configured business_id=%s",
-                business.id,
-            )
             return
         try:
-            send_appointment_owner_notification(
-                to_email=recipient,
-                business_name=business.name,
-                appointment=payload,
-            )
+            send_appointment_email(recipient, appointment_email_payload(appointment))
         except Exception:
             logger.exception(
                 "Failed to send appointment owner email business_id=%s",
@@ -382,8 +413,13 @@ def update_appointment_settings(db: Session, business_id: int, data: dict) -> di
             raise HTTPException(status_code=400, detail="Invalid notification method")
         settings.appointment_notification_method = method
 
-    if "notification_email" in data:
-        settings.appointment_notification_email = (data.get("notification_email") or "").strip()
+    if "notification_email" in data or "ownerNotificationEmail" in data or "owner_notification_email" in data:
+        raw_email = (
+            data.get("ownerNotificationEmail")
+            or data.get("owner_notification_email")
+            or data.get("notification_email")
+        )
+        settings.appointment_notification_email = (raw_email or "").strip()
 
     if "webhook_url" in data:
         settings.appointment_webhook_url = (data.get("webhook_url") or "").strip()

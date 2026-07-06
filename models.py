@@ -160,6 +160,7 @@ class BusinessSettings(Base):
     voice_greeting = Column(Text, default="")
     voice_business_phone = Column(String, default="")
     voice_business_name = Column(String, default="")
+    voice_coupon_used = Column(String, default="")
 
 
 # ============================
@@ -280,6 +281,7 @@ class BillingCheckoutSession(Base):
     used = Column(Integer, default=0)
     referral_code = Column(String, nullable=True, index=True)
     plan_type = Column(String, default="chatbot")
+    coupon_code = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

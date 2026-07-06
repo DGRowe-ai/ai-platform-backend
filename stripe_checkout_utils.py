@@ -11,9 +11,16 @@ from business_utils import get_business_by_key
 from models import BillingCheckoutSession, User
 from plan_utils import (
     PLAN_CHATBOT,
+    PLAN_VOICEBOT,
     get_stripe_price_id_for_plan,
     normalize_plan_type,
     plan_type_from_stripe_price,
+)
+from utils.coupons import (
+    VOICEBOT_BASE_PRICE_CENTS,
+    get_discount_amount,
+    get_voicebot_checkout_unit_amount,
+    validate_coupon,
 )
 from trial_protection_utils import check_trial_eligibility
 
@@ -145,6 +152,9 @@ def upsert_billing_checkout_session(db: Session, session: dict) -> BillingChecko
     plan_type = metadata.get("plan_type")
     if plan_type:
         record.plan_type = normalize_plan_type(plan_type)
+    coupon_code = metadata.get("coupon_code")
+    if coupon_code:
+        record.coupon_code = coupon_code.strip().upper()
     elif session.get("subscription"):
         try:
             subscription = stripe.Subscription.retrieve(session.get("subscription"))
@@ -164,6 +174,39 @@ def upsert_billing_checkout_session(db: Session, session: dict) -> BillingChecko
     return record
 
 
+def _voicebot_line_items(coupon_code: str | None) -> list[dict]:
+    if coupon_code and validate_coupon(coupon_code, PLAN_VOICEBOT):
+        adjusted_price = get_voicebot_checkout_unit_amount(coupon_code)
+        currency = (os.getenv("VOICEBOT_CURRENCY") or "cad").strip().lower()
+        return [
+            {
+                "price_data": {
+                    "currency": currency,
+                    "product_data": {"name": "Rowe AI Voicebot Subscription"},
+                    "unit_amount": adjusted_price,
+                    "recurring": {"interval": "month"},
+                },
+                "quantity": 1,
+            }
+        ]
+
+    price_id = get_stripe_price_id_for_plan(PLAN_VOICEBOT)
+    return [{"price": price_id, "quantity": 1}]
+
+
+def _resolve_checkout_line_items(plan_type: str, coupon_code: str | None) -> tuple[list[dict], str | None]:
+    resolved_plan = normalize_plan_type(plan_type)
+    applied_coupon = None
+
+    if resolved_plan == PLAN_VOICEBOT:
+        if coupon_code and validate_coupon(coupon_code, PLAN_VOICEBOT):
+            applied_coupon = coupon_code.strip().upper()
+        return _voicebot_line_items(coupon_code), applied_coupon
+
+    price_id = get_stripe_price_id_for_plan(resolved_plan)
+    return [{"price": price_id, "quantity": 1}], applied_coupon
+
+
 def create_billing_first_checkout_session(
     db: Session,
     *,
@@ -171,6 +214,7 @@ def create_billing_first_checkout_session(
     device_fingerprint: str | None = None,
     ip_address: str | None = None,
     plan_type: str | None = PLAN_CHATBOT,
+    coupon_code: str | None = None,
 ) -> dict:
     if not stripe.api_key:
         raise HTTPException(
@@ -187,10 +231,14 @@ def create_billing_first_checkout_session(
 
     frontend_url = get_frontend_public_url()
     resolved_plan = normalize_plan_type(plan_type)
-    price_id = get_stripe_price_id_for_plan(resolved_plan)
+    line_items, applied_coupon = _resolve_checkout_line_items(resolved_plan, coupon_code)
     trial_days = get_trial_period_days() if trial_eligible else 0
 
     metadata = {"plan_type": resolved_plan}
+    if applied_coupon:
+        metadata["coupon_code"] = applied_coupon
+        metadata["voicebot_base_price_cents"] = str(VOICEBOT_BASE_PRICE_CENTS)
+        metadata["voicebot_discount_cents"] = str(get_discount_amount(applied_coupon, PLAN_VOICEBOT))
     if referral_code:
         metadata["referral_code"] = referral_code.strip()
     if device_fingerprint:
@@ -206,7 +254,7 @@ def create_billing_first_checkout_session(
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
-            line_items=[{"price": price_id, "quantity": 1}],
+            line_items=line_items,
             subscription_data=subscription_data or None,
             metadata=metadata or None,
             success_url=f"{frontend_url}/register.html?session_id={{CHECKOUT_SESSION_ID}}",
@@ -226,6 +274,9 @@ def create_billing_first_checkout_session(
         )
 
     response = {"url": session.url, "session_id": session.id}
+    if applied_coupon:
+        response["coupon_applied"] = applied_coupon
+        response["adjusted_price_cents"] = get_voicebot_checkout_unit_amount(applied_coupon)
     if not trial_eligible:
         response["trial_eligible"] = False
         response["trial_message"] = (

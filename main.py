@@ -10,7 +10,8 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+from pydantic.config import ConfigDict
 from pathlib import Path
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -156,6 +157,9 @@ from appointment_utils import (
     APPOINTMENT_CHAT_INSTRUCTIONS,
     APPOINTMENT_KNOWLEDGE_LINE,
     APPOINTMENT_TOOL,
+    AppointmentValidationError,
+    create_appointment_request,
+    normalize_external_appointment_payload,
     process_appointment_tool_call,
     serialize_appointment,
     serialize_appointment_settings,
@@ -179,12 +183,13 @@ from plan_utils import (
     user_has_voicebot,
     user_plan_type,
     PLAN_CHATBOT,
+    PLAN_VOICEBOT,
 )
 from plan_welcome_email_utils import (
     send_product_welcome_emails_if_needed,
     should_send_chatbot_welcome_email,
 )
-from voice_settings_utils import get_voice_settings, update_voice_settings
+from voice_settings_utils import get_voice_settings, record_voicebot_coupon_used, update_voice_settings
 from voice_call_utils import delete_voice_call_history, get_voice_call_history
 from voice_subscription_utils import cancel_voicebot_subscription
 
@@ -318,6 +323,7 @@ def ensure_business_settings_schema():
             ("voice_greeting", "ADD COLUMN voice_greeting TEXT DEFAULT ''"),
             ("voice_business_phone", "ADD COLUMN voice_business_phone TEXT DEFAULT ''"),
             ("voice_business_name", "ADD COLUMN voice_business_name TEXT DEFAULT ''"),
+            ("voice_coupon_used", "ADD COLUMN voice_coupon_used TEXT DEFAULT ''"),
         }
         for column_name, ddl in voice_columns:
             if column_name not in columns:
@@ -425,6 +431,10 @@ def ensure_referral_schema():
                     "ALTER TABLE billing_checkout_sessions "
                     "ADD COLUMN plan_type TEXT DEFAULT 'chatbot'"
                 )
+            )
+        if "coupon_code" not in checkout_columns:
+            connection.execute(
+                text("ALTER TABLE billing_checkout_sessions ADD COLUMN coupon_code TEXT")
             )
 
         connection.execute(
@@ -680,9 +690,12 @@ class SignupRequest(BaseModel):
             raise ValueError(str(exc)) from exc
 
 class CreateCheckoutSessionRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     referral_code: str | None = None
     device_fingerprint: str | None = None
     plan_type: str | None = "chatbot"
+    coupon_code: str | None = Field(default=None, alias="couponCode")
 
 class LoginRequest(BaseModel):
     email: str
@@ -1511,6 +1524,31 @@ def save_client_appointment_settings(
     return update_appointment_settings(db, business.id, data)
 
 
+@app.post("/voicebot/appointment_requests")
+def create_voicebot_appointment_request(
+    data: dict,
+    db: Session = Depends(get_db),
+):
+    business_key = data.get("businessId") or data.get("business_id")
+    if not business_key:
+        raise HTTPException(status_code=400, detail="businessId is required")
+
+    business = resolve_business(db, business_key)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    payload = normalize_external_appointment_payload(data)
+    try:
+        record = create_appointment_request(db, business, payload)
+    except AppointmentValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "status": "created",
+        "appointment": serialize_appointment(record),
+    }
+
+
 @app.post("/client/change_password")
 def change_client_password(
     req: ChangePasswordRequest,
@@ -1899,6 +1937,25 @@ Knowledge Base:
     return {"response": ai_response, "conversation_id": convo.id}
 
 
+def apply_voicebot_coupon_after_checkout(
+    db: Session,
+    user: User,
+    coupon_code: str | None,
+) -> None:
+    normalized = (coupon_code or "").strip().upper()
+    if not normalized or normalize_plan_type(user.plan_type) != PLAN_VOICEBOT:
+        return
+
+    business = (
+        db.query(Business)
+        .filter(Business.owner_id == user.id)
+        .order_by(Business.id.asc())
+        .first()
+    )
+    if business:
+        record_voicebot_coupon_used(business.id, normalized)
+
+
 # -------------------------------------------------
 # Auth helpers and routes
 # -------------------------------------------------
@@ -2006,6 +2063,9 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
             status_code=500,
             detail="Unable to create business for this account",
         )
+
+    if checkout_record.coupon_code and normalize_plan_type(user.plan_type) == PLAN_VOICEBOT:
+        record_voicebot_coupon_used(new_business.id, checkout_record.coupon_code)
 
     if trial_result.eligible:
         try:
@@ -2333,12 +2393,14 @@ def create_checkout_session_post(
     referral_code = req.referral_code if req else None
     device_fingerprint = req.device_fingerprint if req else None
     plan_type = req.plan_type if req else "chatbot"
+    coupon_code = req.coupon_code if req else None
     return create_billing_first_checkout_session(
         db,
         referral_code=referral_code,
         device_fingerprint=device_fingerprint,
         ip_address=get_client_ip(request),
         plan_type=plan_type,
+        coupon_code=coupon_code,
     )
 
 
@@ -2393,7 +2455,7 @@ async def stripe_webhook(
     data = event["data"]["object"]
 
     if event_type == "checkout.session.completed":
-        upsert_billing_checkout_session(db, data)
+        checkout_record = upsert_billing_checkout_session(db, data)
         try:
             process_checkout_trial_protection(db, data)
         except Exception:
@@ -2428,6 +2490,8 @@ async def stripe_webhook(
                     user.stripe_customer_id = data.get("customer")
                 db.commit()
                 db.refresh(user)
+                coupon_code = metadata.get("coupon_code") or checkout_record.coupon_code
+                apply_voicebot_coupon_after_checkout(db, user, coupon_code)
                 try:
                     send_product_welcome_emails_if_needed(db, user)
                 except Exception:

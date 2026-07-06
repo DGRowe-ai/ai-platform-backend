@@ -57,6 +57,8 @@ def serialize_voice_settings(settings: BusinessSettings, business: Business | No
         "spell_name": bool(getattr(settings, "voice_spell_name", 0)),
         "voice_spell_name": bool(getattr(settings, "voice_spell_name", 0)),
         "greeting_hint": settings.voice_greeting or DEFAULT_VOICE_GREETING,
+        "couponUsed": getattr(settings, "voice_coupon_used", None) or "",
+        "coupon_used": getattr(settings, "voice_coupon_used", None) or "",
     }
 
 
@@ -110,6 +112,17 @@ def update_voice_settings(business_id: int, data: dict) -> dict:
         db.commit()
         db.refresh(settings)
         return serialize_voice_settings(settings, business)
+
+
+def record_voicebot_coupon_used(business_id: int, coupon_code: str) -> None:
+    normalized = (coupon_code or "").strip().upper()
+    if not normalized:
+        return
+
+    with SessionLocal() as db:
+        settings = _get_or_create_settings(db, business_id)
+        settings.voice_coupon_used = normalized
+        db.commit()
 
 
 def build_voice_realtime_instructions(
