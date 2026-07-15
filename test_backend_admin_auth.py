@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 import main
 from auth_utils import hash_password
 from database import Base, SessionLocal, engine
-from models import AuditLog, Business, User
+from models import AuditLog, Business, BusinessSettings, User
 
 
 class BackendAdminAuthTests(unittest.TestCase):
@@ -73,6 +73,14 @@ class BackendAdminAuthTests(unittest.TestCase):
 
         self.client_user.business_id = self.client_business.id
         self.business_admin_user.business_id = self.business_admin_business.id
+        self.db.add(
+            BusinessSettings(
+                business_id=self.client_business.id,
+                call_forwarding_enabled=1,
+                call_forwarding_number="+15195551234",
+                voice_business_phone="+15195550000",
+            )
+        )
         self.db.add(AuditLog(user_id=self.admin_user.id, event_type="signup", description="test"))
         self.db.commit()
 
@@ -109,6 +117,23 @@ class BackendAdminAuthTests(unittest.TestCase):
         self.assertEqual(analytics_response.status_code, 200)
         self.assertEqual(len(businesses_response.json()), 3)
 
+    def test_admin_can_view_client_information(self):
+        login_response = self.login("admin@example.com")
+        headers = self.auth_headers(login_response["access_token"])
+
+        response = self.client.get("/admin/client-information", headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        clients = response.json()["clients"]
+        client_info = next(
+            item for item in clients if item["business_key"] == "client_business"
+        )
+        self.assertEqual(client_info["business_name"], "Client Business")
+        self.assertEqual(client_info["owner_email"], "client@example.com")
+        self.assertEqual(client_info["call_forwarding_number"], "+15195551234")
+        self.assertEqual(client_info["voice_business_phone"], "+15195550000")
+        self.assertTrue(client_info["call_forwarding_enabled"])
+
     def test_non_admin_is_forbidden_but_my_businesses_still_works(self):
         login_response = self.login("client@example.com")
 
@@ -118,10 +143,12 @@ class BackendAdminAuthTests(unittest.TestCase):
 
         headers = self.auth_headers(login_response["access_token"])
         businesses_response = self.client.get("/admin/businesses", headers=headers)
+        client_info_response = self.client.get("/admin/client-information", headers=headers)
         analytics_response = self.client.get("/admin/analytics", headers=headers)
         my_businesses_response = self.client.get("/my_businesses", headers=headers)
 
         self.assertEqual(businesses_response.status_code, 403)
+        self.assertEqual(client_info_response.status_code, 403)
         self.assertEqual(analytics_response.status_code, 403)
         self.assertEqual(my_businesses_response.status_code, 200)
         self.assertEqual(
