@@ -10,19 +10,20 @@ from sqlalchemy.orm import Session
 
 from models import User
 from plan_utils import (
-    PLAN_CHATBOT,
-    PLAN_DUO,
-    PLAN_VOICEBOT,
+    PRODUCT_DUO,
+    PRODUCT_VOICEBOT,
+    TIER_CHATBOT,
+    apply_tier_to_user,
     get_chatbot_price_id,
-    user_plan_type,
+    user_product_type,
 )
 
 logger = logging.getLogger(__name__)
 
 
 def cancel_voicebot_subscription(db: Session, user: User) -> dict:
-    plan = user_plan_type(user)
-    if plan not in {PLAN_VOICEBOT, PLAN_DUO}:
+    product = user_product_type(user)
+    if product not in {PRODUCT_VOICEBOT, PRODUCT_DUO}:
         raise HTTPException(
             status_code=400,
             detail="Your account does not include an active voicebot subscription.",
@@ -39,6 +40,8 @@ def cancel_voicebot_subscription(db: Session, user: User) -> dict:
         return {
             "status": "cancelled",
             "plan_type": user.plan_type,
+            "product_type": user_product_type(user),
+            "tier": getattr(user, "tier", None),
             "message": "Voicebot service cancelled.",
         }
 
@@ -60,19 +63,21 @@ def cancel_voicebot_subscription(db: Session, user: User) -> dict:
         return {
             "status": "cancelled",
             "plan_type": user.plan_type,
+            "product_type": user_product_type(user),
+            "tier": getattr(user, "tier", None),
             "message": "Voicebot service cancelled.",
         }
 
     subscription = subscriptions.data[0]
-    current_plan = user_plan_type(user)
+    current_product = user_product_type(user)
 
-    if current_plan == PLAN_VOICEBOT:
+    if current_product == PRODUCT_VOICEBOT:
         stripe.Subscription.cancel(subscription.id)
         user.subscription_active = 0
         user.billing_status = "inactive"
         message = "Voicebot service cancelled."
     else:
-        if current_plan != PLAN_DUO:
+        if current_product != PRODUCT_DUO:
             raise HTTPException(status_code=400, detail="Unsupported plan for voice cancellation.")
 
         items = subscription.get("items", {}).get("data") or []
@@ -91,7 +96,7 @@ def cancel_voicebot_subscription(db: Session, user: User) -> dict:
             items=[{"id": items[0]["id"], "price": chatbot_price}],
             proration_behavior="create_prorations",
         )
-        user.plan_type = PLAN_CHATBOT
+        apply_tier_to_user(user, TIER_CHATBOT)
         message = "Voicebot removed from your Duo plan. Your chatbot subscription remains active."
 
     db.add(user)
@@ -101,5 +106,7 @@ def cancel_voicebot_subscription(db: Session, user: User) -> dict:
     return {
         "status": "cancelled",
         "plan_type": user.plan_type,
+        "product_type": user_product_type(user),
+        "tier": getattr(user, "tier", None),
         "message": message,
     }

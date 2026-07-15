@@ -1,15 +1,35 @@
-"""Voicebot-only coupon validation and discount helpers."""
+"""Founders coupon validation — $10 off permanently for voicebot and duo tiers only."""
 
 from __future__ import annotations
 
-PLAN_VOICEBOT = "voicebot"
-VOICEBOT_BASE_PRICE_CENTS = 5000
+from plan_utils import (
+    COUPON_ELIGIBLE_TIERS,
+    TIER_PRICE_CENTS,
+    normalize_checkout_plan,
+)
+
+FOUNDERS_COUPON_CODE = "FOUNDERS10"
+FOUNDERS_DISCOUNT_CENTS = 1000
+
+# Deprecated chatbot-only coupons — intentionally not registered
+_DEPRECATED_COUPON_CODES = {
+    "CHATBOT10",
+    "FOREVER10CHATBOT",
+    "FOUNDERSCHATBOT",
+}
 
 _COUPONS: list[dict] = [
     {
+        "code": FOUNDERS_COUPON_CODE,
+        "discountAmount": FOUNDERS_DISCOUNT_CENTS,
+        "appliesTo": sorted(COUPON_ELIGIBLE_TIERS),
+        "isActive": True,
+    },
+    # Keep old voicebot code as an alias that maps to the same founders discount
+    {
         "code": "FOREVER10VOICEBOT",
-        "discountAmount": 1000,
-        "appliesTo": [PLAN_VOICEBOT],
+        "discountAmount": FOUNDERS_DISCOUNT_CENTS,
+        "appliesTo": sorted(COUPON_ELIGIBLE_TIERS),
         "isActive": True,
     },
 ]
@@ -23,6 +43,8 @@ def _find_coupon(code: str | None) -> dict | None:
     normalized = _normalize_code(code)
     if not normalized:
         return None
+    if normalized in _DEPRECATED_COUPON_CODES:
+        return None
 
     for coupon in _COUPONS:
         if coupon.get("code", "").upper() == normalized:
@@ -30,17 +52,18 @@ def _find_coupon(code: str | None) -> dict | None:
     return None
 
 
-def validate_coupon(code: str | None, product: str = PLAN_VOICEBOT) -> bool:
+def validate_coupon(code: str | None, product: str | None = None) -> bool:
+    """Validate coupon for a tier (starter/pro/premium/duo_*) or product type."""
     coupon = _find_coupon(code)
-    if not coupon:
+    if not coupon or not coupon.get("isActive"):
         return False
 
-    product_name = (product or "").strip().lower()
-    applies_to = [item.strip().lower() for item in coupon.get("appliesTo", [])]
-    return bool(coupon.get("isActive")) and product_name in applies_to
+    tier = normalize_checkout_plan(product)
+    applies_to = {item.strip().lower() for item in coupon.get("appliesTo", [])}
+    return tier in applies_to and tier in COUPON_ELIGIBLE_TIERS
 
 
-def get_discount_amount(code: str | None, product: str = PLAN_VOICEBOT) -> int:
+def get_discount_amount(code: str | None, product: str | None = None) -> int:
     if not validate_coupon(code, product):
         return 0
 
@@ -54,7 +77,16 @@ def get_discount_amount(code: str | None, product: str = PLAN_VOICEBOT) -> int:
         return 0
 
 
+def get_checkout_unit_amount(tier: str | None, code: str | None = None) -> int:
+    normalized = normalize_checkout_plan(tier)
+    base = TIER_PRICE_CENTS.get(normalized, TIER_PRICE_CENTS["chatbot"])
+    discount = get_discount_amount(code, normalized)
+    return max(base - discount, 50)
+
+
+# Backward-compatible aliases used by older checkout code
+VOICEBOT_BASE_PRICE_CENTS = TIER_PRICE_CENTS["starter"]
+
+
 def get_voicebot_checkout_unit_amount(code: str | None) -> int:
-    discount = get_discount_amount(code, PLAN_VOICEBOT)
-    adjusted = VOICEBOT_BASE_PRICE_CENTS - discount
-    return max(adjusted, 50)
+    return get_checkout_unit_amount("starter", code)

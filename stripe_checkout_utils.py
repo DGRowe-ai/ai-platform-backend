@@ -10,16 +10,20 @@ from auth_utils import normalize_email
 from business_utils import get_business_by_key
 from models import BillingCheckoutSession, User
 from plan_utils import (
+    COUPON_ELIGIBLE_TIERS,
     PLAN_CHATBOT,
-    PLAN_VOICEBOT,
+    TIER_CHATBOT,
+    apply_tier_to_user,
     get_stripe_price_id_for_plan,
+    get_tier_price_cents,
+    normalize_checkout_plan,
     normalize_plan_type,
-    plan_type_from_stripe_price,
+    product_type_from_tier,
+    tier_from_stripe_price,
 )
 from utils.coupons import (
-    VOICEBOT_BASE_PRICE_CENTS,
+    get_checkout_unit_amount,
     get_discount_amount,
-    get_voicebot_checkout_unit_amount,
     validate_coupon,
 )
 from trial_protection_utils import check_trial_eligibility
@@ -28,6 +32,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BACKEND_URL = "https://ai-platform-backend-ulqs.onrender.com"
 DEFAULT_FRONTEND_URL = "https://ai-platform-frontend-uaaa.onrender.com"
+
+TIER_PRODUCT_LABELS = {
+    "chatbot": "Rowe AI Chatbot Subscription",
+    "starter": "Rowe AI Voicebot Starter",
+    "pro": "Rowe AI Voicebot Pro",
+    "premium": "Rowe AI Voicebot Premium",
+    "duo_starter": "Rowe AI Duo Starter",
+    "duo_pro": "Rowe AI Duo Pro",
+    "duo_premium": "Rowe AI Duo Premium",
+}
 
 
 def get_backend_public_url() -> str:
@@ -48,7 +62,7 @@ def get_frontend_public_url() -> str:
 
 def get_stripe_price_id() -> str:
     """Backward-compatible default chatbot price lookup."""
-    return get_stripe_price_id_for_plan(PLAN_CHATBOT)
+    return get_stripe_price_id_for_plan(TIER_CHATBOT)
 
 
 def get_trial_period_days() -> int:
@@ -127,6 +141,13 @@ def _extract_checkout_email(session: dict) -> str | None:
     return None
 
 
+def _apply_tier_to_checkout_record(record: BillingCheckoutSession, tier: str) -> None:
+    normalized = normalize_checkout_plan(tier)
+    record.tier = normalized
+    record.product_type = product_type_from_tier(normalized)
+    record.plan_type = record.product_type
+
+
 def upsert_billing_checkout_session(db: Session, session: dict) -> BillingCheckoutSession:
     session_id = session.get("id")
     if not session_id:
@@ -149,23 +170,25 @@ def upsert_billing_checkout_session(db: Session, session: dict) -> BillingChecko
     referral_code = metadata.get("referral_code")
     if referral_code:
         record.referral_code = referral_code.strip()
-    plan_type = metadata.get("plan_type")
-    if plan_type:
-        record.plan_type = normalize_plan_type(plan_type)
+
+    tier_value = metadata.get("tier") or metadata.get("plan_type")
+    if tier_value:
+        _apply_tier_to_checkout_record(record, tier_value)
+
     coupon_code = metadata.get("coupon_code")
     if coupon_code:
         record.coupon_code = coupon_code.strip().upper()
-    elif session.get("subscription"):
+    elif session.get("subscription") and not record.tier:
         try:
             subscription = stripe.Subscription.retrieve(session.get("subscription"))
             items = (subscription.get("items") or {}).get("data") or []
             if items:
                 price_id = items[0].get("price", {}).get("id")
-                resolved = plan_type_from_stripe_price(price_id)
+                resolved = tier_from_stripe_price(price_id)
                 if resolved:
-                    record.plan_type = resolved
+                    _apply_tier_to_checkout_record(record, resolved)
         except stripe.error.StripeError:
-            logger.warning("Unable to resolve plan_type from checkout subscription")
+            logger.warning("Unable to resolve tier from checkout subscription")
     if not record.created_at:
         record.created_at = datetime.utcnow()
 
@@ -174,37 +197,37 @@ def upsert_billing_checkout_session(db: Session, session: dict) -> BillingChecko
     return record
 
 
-def _voicebot_line_items(coupon_code: str | None) -> list[dict]:
-    if coupon_code and validate_coupon(coupon_code, PLAN_VOICEBOT):
-        adjusted_price = get_voicebot_checkout_unit_amount(coupon_code)
-        currency = (os.getenv("VOICEBOT_CURRENCY") or "cad").strip().lower()
-        return [
-            {
-                "price_data": {
-                    "currency": currency,
-                    "product_data": {"name": "Rowe AI Voicebot Subscription"},
-                    "unit_amount": adjusted_price,
-                    "recurring": {"interval": "month"},
-                },
-                "quantity": 1,
-            }
-        ]
-
-    price_id = get_stripe_price_id_for_plan(PLAN_VOICEBOT)
-    return [{"price": price_id, "quantity": 1}]
+def _discounted_line_items(tier: str, coupon_code: str) -> list[dict]:
+    currency = (os.getenv("STRIPE_CURRENCY") or os.getenv("VOICEBOT_CURRENCY") or "cad").strip().lower()
+    unit_amount = get_checkout_unit_amount(tier, coupon_code)
+    label = TIER_PRODUCT_LABELS.get(tier, "Rowe AI Subscription")
+    return [
+        {
+            "price_data": {
+                "currency": currency,
+                "product_data": {"name": label},
+                "unit_amount": unit_amount,
+                "recurring": {"interval": "month"},
+            },
+            "quantity": 1,
+        }
+    ]
 
 
-def _resolve_checkout_line_items(plan_type: str, coupon_code: str | None) -> tuple[list[dict], str | None]:
-    resolved_plan = normalize_plan_type(plan_type)
+def _resolve_checkout_line_items(plan_type: str, coupon_code: str | None) -> tuple[list[dict], str | None, str]:
+    resolved_tier = normalize_checkout_plan(plan_type)
     applied_coupon = None
 
-    if resolved_plan == PLAN_VOICEBOT:
-        if coupon_code and validate_coupon(coupon_code, PLAN_VOICEBOT):
-            applied_coupon = coupon_code.strip().upper()
-        return _voicebot_line_items(coupon_code), applied_coupon
+    if (
+        coupon_code
+        and resolved_tier in COUPON_ELIGIBLE_TIERS
+        and validate_coupon(coupon_code, resolved_tier)
+    ):
+        applied_coupon = coupon_code.strip().upper()
+        return _discounted_line_items(resolved_tier, applied_coupon), applied_coupon, resolved_tier
 
-    price_id = get_stripe_price_id_for_plan(resolved_plan)
-    return [{"price": price_id, "quantity": 1}], applied_coupon
+    price_id = get_stripe_price_id_for_plan(resolved_tier)
+    return [{"price": price_id, "quantity": 1}], applied_coupon, resolved_tier
 
 
 def create_billing_first_checkout_session(
@@ -213,7 +236,7 @@ def create_billing_first_checkout_session(
     referral_code: str | None = None,
     device_fingerprint: str | None = None,
     ip_address: str | None = None,
-    plan_type: str | None = PLAN_CHATBOT,
+    plan_type: str | None = TIER_CHATBOT,
     coupon_code: str | None = None,
 ) -> dict:
     if not stripe.api_key:
@@ -230,15 +253,19 @@ def create_billing_first_checkout_session(
     trial_eligible = trial_result.eligible
 
     frontend_url = get_frontend_public_url()
-    resolved_plan = normalize_plan_type(plan_type)
-    line_items, applied_coupon = _resolve_checkout_line_items(resolved_plan, coupon_code)
+    line_items, applied_coupon, resolved_tier = _resolve_checkout_line_items(plan_type, coupon_code)
+    product_type = product_type_from_tier(resolved_tier)
     trial_days = get_trial_period_days() if trial_eligible else 0
 
-    metadata = {"plan_type": resolved_plan}
+    metadata = {
+        "tier": resolved_tier,
+        "product_type": product_type,
+        "plan_type": resolved_tier,
+    }
     if applied_coupon:
         metadata["coupon_code"] = applied_coupon
-        metadata["voicebot_base_price_cents"] = str(VOICEBOT_BASE_PRICE_CENTS)
-        metadata["voicebot_discount_cents"] = str(get_discount_amount(applied_coupon, PLAN_VOICEBOT))
+        metadata["base_price_cents"] = str(get_tier_price_cents(resolved_tier))
+        metadata["discount_cents"] = str(get_discount_amount(applied_coupon, resolved_tier))
     if referral_code:
         metadata["referral_code"] = referral_code.strip()
     if device_fingerprint:
@@ -273,10 +300,15 @@ def create_billing_first_checkout_session(
             detail="Stripe checkout session did not return a redirect URL",
         )
 
-    response = {"url": session.url, "session_id": session.id}
+    response = {
+        "url": session.url,
+        "session_id": session.id,
+        "tier": resolved_tier,
+        "product_type": product_type,
+    }
     if applied_coupon:
         response["coupon_applied"] = applied_coupon
-        response["adjusted_price_cents"] = get_voicebot_checkout_unit_amount(applied_coupon)
+        response["adjusted_price_cents"] = get_checkout_unit_amount(resolved_tier, applied_coupon)
     if not trial_eligible:
         response["trial_eligible"] = False
         response["trial_message"] = (
@@ -310,6 +342,9 @@ def create_subscription_checkout_session(
 
     metadata = {
         "trial_eligible": "1" if trial_result.eligible else "0",
+        "tier": TIER_CHATBOT,
+        "product_type": PLAN_CHATBOT,
+        "plan_type": TIER_CHATBOT,
     }
     if device_fingerprint:
         metadata["device_fingerprint"] = device_fingerprint.strip()
@@ -372,6 +407,8 @@ def verify_checkout_session_for_registration(db: Session, session_id: str) -> di
             "valid": True,
             "email": record.customer_email,
             "session_id": session_id,
+            "tier": getattr(record, "tier", None) or normalize_checkout_plan(record.plan_type),
+            "product_type": getattr(record, "product_type", None) or normalize_plan_type(record.plan_type),
         }
 
     session = retrieve_checkout_session(session_id)
@@ -380,10 +417,14 @@ def verify_checkout_session_for_registration(db: Session, session_id: str) -> di
 
     upsert_billing_checkout_session(db, session)
     email = _extract_checkout_email(session)
+    metadata = session.get("metadata") or {}
     return {
         "valid": True,
         "email": email,
         "session_id": session_id,
+        "tier": metadata.get("tier") or normalize_checkout_plan(metadata.get("plan_type")),
+        "product_type": metadata.get("product_type")
+        or product_type_from_tier(metadata.get("tier") or metadata.get("plan_type")),
     }
 
 
@@ -436,11 +477,18 @@ def create_customer_portal_session(db: Session, user: User) -> str:
 
     customer_id = get_or_create_stripe_customer(db, user)
     frontend_url = get_frontend_public_url()
+    product = normalize_plan_type(getattr(user, "product_type", None) or user.plan_type)
+    if product == "duo":
+        return_path = "dashboard-duo.html"
+    elif product == "voicebot":
+        return_path = "dashboard-voicebot.html"
+    else:
+        return_path = "dashboard-chatbot.html"
 
     try:
         session = stripe.billingPortal.sessions.create(
             customer=customer_id,
-            return_url=f"{frontend_url}/client-dashboard.html",
+            return_url=f"{frontend_url}/{return_path}",
         )
     except stripe.error.StripeError as exc:
         logger.exception("Stripe portal session failed for user_id=%s", user.id)
@@ -456,3 +504,11 @@ def create_customer_portal_session(db: Session, user: User) -> str:
         )
 
     return session.url
+
+
+def assign_tier_from_checkout_metadata(user: User, metadata: dict | None, price_id: str | None = None) -> str:
+    metadata = metadata or {}
+    tier_value = metadata.get("tier") or metadata.get("plan_type")
+    if not tier_value and price_id:
+        tier_value = tier_from_stripe_price(price_id)
+    return apply_tier_to_user(user, tier_value or TIER_CHATBOT)

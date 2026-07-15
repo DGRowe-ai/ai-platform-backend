@@ -352,7 +352,7 @@ def send_voicebot_welcome_email(*, to_email: str, client_name: str) -> None:
 Welcome to Rowe AI Voicebot! Your AI phone receptionist is officially active and ready to start handling your calls.
 
 To get started, please visit your Voicebot Dashboard:
-https://ai-platform-frontend-uaaa.onrender.com/login-voicebot.html
+https://ai-platform-frontend-uaaa.onrender.com/login.html
 
 Inside your dashboard, you can:
 • Enter your Business Phone Number
@@ -385,15 +385,13 @@ def send_duo_welcome_email(*, to_email: str, client_name: str) -> None:
 
 Welcome to Rowe AI Duo! Both your AI website chatbot and your AI phone receptionist are now active.
 
-You can access your dashboards here:
+You can access your Duo dashboard here:
 
-Voicebot Dashboard:
-https://ai-platform-frontend-uaaa.onrender.com/login-voicebot.html
+https://ai-platform-frontend-uaaa.onrender.com/login.html
 
-Chatbot Dashboard:
-https://ai-platform-frontend-uaaa.onrender.com/login-chatbot.html
+After login you will be routed to the Duo dashboard with Chatbot and Voicebot side by side.
 
-Please visit both dashboards to set up your bots:
+Please open the Duo dashboard to set up both bots:
 
 VOICEBOT SETUP:
 • Enter your Business Phone Number

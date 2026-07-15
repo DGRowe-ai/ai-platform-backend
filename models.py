@@ -19,8 +19,12 @@ class User(Base):
     # Subscription status
     subscription_active = Column(Integer, default=0)
 
-    # Product plan: chatbot, voicebot, duo
+    # Product type for routing: chatbot, voicebot, duo
     plan_type = Column(String, default="chatbot")
+    product_type = Column(String, default="chatbot")
+
+    # Pricing tier: chatbot | starter | pro | premium | duo_starter | duo_pro | duo_premium
+    tier = Column(String, default="chatbot")
 
     # Stripe billing
     stripe_customer_id = Column(String, nullable=True, index=True)
@@ -161,6 +165,13 @@ class BusinessSettings(Base):
     voice_business_phone = Column(String, default="")
     voice_business_name = Column(String, default="")
     voice_coupon_used = Column(String, default="")
+    multi_location_enabled = Column(Integer, default=0)
+    locations_json = Column(Text, default="[]")
+    call_forwarding_enabled = Column(Integer, default=0)
+    call_forwarding_number = Column(String, default="")
+    monthly_optimization = Column(Integer, default=0)
+    dedicated_support = Column(Integer, default=0)
+    custom_workflows_json = Column(Text, default="[]")
 
 
 # ============================
@@ -281,6 +292,8 @@ class BillingCheckoutSession(Base):
     used = Column(Integer, default=0)
     referral_code = Column(String, nullable=True, index=True)
     plan_type = Column(String, default="chatbot")
+    tier = Column(String, default="chatbot")
+    product_type = Column(String, default="chatbot")
     coupon_code = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

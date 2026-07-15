@@ -314,7 +314,8 @@ def _load_business_voice_instructions(business_id: int | None) -> str | None:
     try:
         from database import SessionLocal
         from knowledge_utils import retrieve_voice_knowledge_context
-        from models import Business, BusinessSettings
+        from models import Business, BusinessSettings, User
+        from plan_utils import user_tier
         from voice_settings_utils import build_voice_realtime_instructions
 
         with SessionLocal() as db:
@@ -325,15 +326,22 @@ def _load_business_voice_instructions(business_id: int | None) -> str | None:
                 logger.warning("No business_settings row for business_id=%s", business_id)
                 return None
             business = db.query(Business).filter(Business.id == business_id).first()
+            tier = None
+            if business and business.owner_id:
+                owner = db.query(User).filter(User.id == business.owner_id).first()
+                if owner:
+                    tier = user_tier(owner)
             knowledge_context = retrieve_voice_knowledge_context(db, business_id)
             instructions = build_voice_realtime_instructions(
                 settings,
                 knowledge_context,
                 business_name=(business.name if business else ""),
+                tier=tier,
             )
             logger.info(
-                "Loaded voice instructions business_id=%s custom_chars=%s knowledge_chars=%s total_chars=%s",
+                "Loaded voice instructions business_id=%s tier=%s custom_chars=%s knowledge_chars=%s total_chars=%s",
                 business_id,
+                tier,
                 len((settings.voice_custom_instructions or "").strip()),
                 len(knowledge_context),
                 len(instructions),

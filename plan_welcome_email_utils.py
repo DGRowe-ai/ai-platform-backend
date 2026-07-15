@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from email_utils import send_duo_welcome_email, send_voicebot_welcome_email
 from models import Business, User
-from plan_utils import PLAN_CHATBOT, PLAN_DUO, PLAN_VOICEBOT, user_plan_type
+from plan_utils import PRODUCT_CHATBOT, PRODUCT_DUO, PRODUCT_VOICEBOT, user_product_type
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,10 @@ def send_product_welcome_emails_if_needed(
     client_name: str = "",
 ) -> None:
     """Send voicebot or duo welcome emails once per user."""
-    plan = user_plan_type(user)
+    product = user_product_type(user)
     name = _client_name_for_user(db, user, client_name)
 
-    if plan == PLAN_DUO:
+    if product == PRODUCT_DUO:
         if user.duo_welcome_email_sent_at:
             return
         send_duo_welcome_email(to_email=user.email, client_name=name)
@@ -47,7 +47,7 @@ def send_product_welcome_emails_if_needed(
         logger.info("Sent duo welcome email to user_id=%s", user.id)
         return
 
-    if plan == PLAN_VOICEBOT:
+    if product == PRODUCT_VOICEBOT:
         if user.voicebot_welcome_email_sent_at:
             return
         send_voicebot_welcome_email(to_email=user.email, client_name=name)
@@ -58,4 +58,4 @@ def send_product_welcome_emails_if_needed(
 
 
 def should_send_chatbot_welcome_email(user: User) -> bool:
-    return user_plan_type(user) == PLAN_CHATBOT
+    return user_product_type(user) == PRODUCT_CHATBOT

@@ -174,16 +174,25 @@ from trial_protection_utils import (
     strip_subscription_trial,
 )
 from plan_utils import (
+    COUPON_ELIGIBLE_TIERS,
+    PLAN_CHATBOT,
+    PLAN_VOICEBOT,
+    TIER_STARTER,
+    apply_tier_to_user,
+    dashboard_path_for_user,
+    normalize_checkout_plan,
     normalize_plan_type,
     plan_type_from_stripe_price,
     require_chatbot_access,
+    require_duo_access,
     require_voicebot_access,
     serialize_subscription,
+    tier_from_stripe_price,
     user_has_chatbot,
     user_has_voicebot,
     user_plan_type,
-    PLAN_CHATBOT,
-    PLAN_VOICEBOT,
+    user_product_type,
+    user_tier,
 )
 from plan_welcome_email_utils import (
     send_product_welcome_emails_if_needed,
@@ -324,6 +333,13 @@ def ensure_business_settings_schema():
             ("voice_business_phone", "ADD COLUMN voice_business_phone TEXT DEFAULT ''"),
             ("voice_business_name", "ADD COLUMN voice_business_name TEXT DEFAULT ''"),
             ("voice_coupon_used", "ADD COLUMN voice_coupon_used TEXT DEFAULT ''"),
+            ("multi_location_enabled", "ADD COLUMN multi_location_enabled INTEGER DEFAULT 0"),
+            ("locations_json", "ADD COLUMN locations_json TEXT DEFAULT '[]'"),
+            ("call_forwarding_enabled", "ADD COLUMN call_forwarding_enabled INTEGER DEFAULT 0"),
+            ("call_forwarding_number", "ADD COLUMN call_forwarding_number TEXT DEFAULT ''"),
+            ("monthly_optimization", "ADD COLUMN monthly_optimization INTEGER DEFAULT 0"),
+            ("dedicated_support", "ADD COLUMN dedicated_support INTEGER DEFAULT 0"),
+            ("custom_workflows_json", "ADD COLUMN custom_workflows_json TEXT DEFAULT '[]'"),
         }
         for column_name, ddl in voice_columns:
             if column_name not in columns:
@@ -395,6 +411,16 @@ def ensure_user_stripe_schema():
                 text("ALTER TABLE users ADD COLUMN plan_type TEXT DEFAULT 'chatbot'")
             )
 
+        if "product_type" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN product_type TEXT DEFAULT 'chatbot'")
+            )
+
+        if "tier" not in columns:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN tier TEXT DEFAULT 'chatbot'")
+            )
+
         if "voicebot_welcome_email_sent_at" not in columns:
             connection.execute(
                 text("ALTER TABLE users ADD COLUMN voicebot_welcome_email_sent_at TEXT")
@@ -435,6 +461,20 @@ def ensure_referral_schema():
         if "coupon_code" not in checkout_columns:
             connection.execute(
                 text("ALTER TABLE billing_checkout_sessions ADD COLUMN coupon_code TEXT")
+            )
+        if "tier" not in checkout_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE billing_checkout_sessions "
+                    "ADD COLUMN tier TEXT DEFAULT 'chatbot'"
+                )
+            )
+        if "product_type" not in checkout_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE billing_checkout_sessions "
+                    "ADD COLUMN product_type TEXT DEFAULT 'chatbot'"
+                )
             )
 
         connection.execute(
@@ -615,25 +655,25 @@ def ensure_voice_call_schema():
 def grant_complimentary_voicebot_access():
     db = SessionLocal()
     try:
-        from plan_utils import COMPLIMENTARY_VOICE_EMAILS, PLAN_VOICEBOT
+        from plan_utils import COMPLIMENTARY_DUO_EMAILS, TIER_DUO_PREMIUM, apply_tier_to_user
 
         updated = 0
-        for email in COMPLIMENTARY_VOICE_EMAILS:
+        for email in COMPLIMENTARY_DUO_EMAILS:
             user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
             if not user:
-                logger.warning("Complimentary voice user not found: %s", email)
+                logger.warning("Complimentary duo user not found: %s", email)
                 continue
-            user.plan_type = PLAN_VOICEBOT
+            apply_tier_to_user(user, TIER_DUO_PREMIUM)
             user.subscription_active = 1
             user.billing_status = "active"
             db.add(user)
             updated += 1
         if updated:
             db.commit()
-            logger.info("Granted complimentary voicebot access to %s user(s)", updated)
+            logger.info("Granted complimentary duo premium access to %s user(s)", updated)
     except SQLAlchemyError:
         db.rollback()
-        logger.exception("Failed to grant complimentary voicebot access")
+        logger.exception("Failed to grant complimentary duo access")
     finally:
         db.close()
 
@@ -695,6 +735,7 @@ class CreateCheckoutSessionRequest(BaseModel):
     referral_code: str | None = None
     device_fingerprint: str | None = None
     plan_type: str | None = "chatbot"
+    tier: str | None = None
     coupon_code: str | None = Field(default=None, alias="couponCode")
 
 class LoginRequest(BaseModel):
@@ -910,14 +951,20 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         "business_id": business_id
     })
 
+    subscription = serialize_subscription(user)
     return {
         "access_token": token,
         "token_type": "bearer",
         "user_id": user_id,
         "subscription_active": subscription_active,
-        "plan_type": user_plan_type(user),
-        "has_chatbot": user_has_chatbot(user),
-        "has_voicebot": user_has_voicebot(user),
+        "plan_type": subscription["plan_type"],
+        "product_type": subscription["product_type"],
+        "tier": subscription["tier"],
+        "has_chatbot": subscription["has_chatbot"],
+        "has_voicebot": subscription["has_voicebot"],
+        "complimentary": subscription.get("complimentary", False),
+        "dashboard_url": subscription["dashboard_url"],
+        "features": subscription["features"],
         "role": role,
         "business_role": business_role,
         "account_role": business_role,
@@ -1943,7 +1990,8 @@ def apply_voicebot_coupon_after_checkout(
     coupon_code: str | None,
 ) -> None:
     normalized = (coupon_code or "").strip().upper()
-    if not normalized or normalize_plan_type(user.plan_type) != PLAN_VOICEBOT:
+    tier = user_tier(user)
+    if not normalized or tier not in COUPON_ELIGIBLE_TIERS:
         return
 
     business = (
@@ -2005,8 +2053,10 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
         user.role = user.role or "owner"
         user.billing_status = "active"
         user.subscription_active = 1
-        user.plan_type = normalize_plan_type(checkout_record.plan_type)
-        user.plan_type = normalize_plan_type(checkout_record.plan_type)
+        apply_tier_to_user(
+            user,
+            getattr(checkout_record, "tier", None) or checkout_record.plan_type,
+        )
     else:
         user = User(
             email=email,
@@ -2014,7 +2064,10 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
             subscription_active=1,
             billing_status="active",
             role="owner",
-            plan_type=normalize_plan_type(checkout_record.plan_type),
+        )
+        apply_tier_to_user(
+            user,
+            getattr(checkout_record, "tier", None) or checkout_record.plan_type,
         )
         db.add(user)
 
@@ -2064,7 +2117,7 @@ def signup(req: SignupRequest, request: Request, db: Session = Depends(get_db)):
             detail="Unable to create business for this account",
         )
 
-    if checkout_record.coupon_code and normalize_plan_type(user.plan_type) == PLAN_VOICEBOT:
+    if checkout_record.coupon_code and user_tier(user) in COUPON_ELIGIBLE_TIERS:
         record_voicebot_coupon_used(new_business.id, checkout_record.coupon_code)
 
     if trial_result.eligible:
@@ -2392,7 +2445,7 @@ def create_checkout_session_post(
 ):
     referral_code = req.referral_code if req else None
     device_fingerprint = req.device_fingerprint if req else None
-    plan_type = req.plan_type if req else "chatbot"
+    plan_type = (req.tier or req.plan_type) if req else "chatbot"
     coupon_code = req.coupon_code if req else None
     return create_billing_first_checkout_session(
         db,
@@ -2472,20 +2525,21 @@ async def stripe_webhook(
                 user.subscription_active = 1
                 user.billing_status = "active"
                 metadata = data.get("metadata") or {}
-                if metadata.get("plan_type"):
-                    user.plan_type = normalize_plan_type(metadata.get("plan_type"))
-                elif data.get("subscription"):
+                tier_value = metadata.get("tier") or metadata.get("plan_type")
+                price_id = None
+                if not tier_value and data.get("subscription"):
                     try:
                         subscription = stripe.Subscription.retrieve(data.get("subscription"))
                         items = (subscription.get("items") or {}).get("data") or []
                         if items:
-                            resolved = plan_type_from_stripe_price(
-                                items[0].get("price", {}).get("id")
-                            )
-                            if resolved:
-                                user.plan_type = resolved
+                            price_id = items[0].get("price", {}).get("id")
+                            tier_value = tier_from_stripe_price(price_id)
                     except stripe.error.StripeError:
-                        logger.warning("Unable to resolve plan_type from checkout webhook")
+                        logger.warning("Unable to resolve tier from checkout webhook")
+                if tier_value:
+                    apply_tier_to_user(user, tier_value)
+                elif getattr(checkout_record, "tier", None):
+                    apply_tier_to_user(user, checkout_record.tier)
                 if data.get("customer"):
                     user.stripe_customer_id = data.get("customer")
                 db.commit()
