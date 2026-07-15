@@ -7,6 +7,9 @@ from plan_utils import (
     normalize_checkout_plan,
     tier_allows_multi_location,
     tier_allows_call_forwarding,
+    tier_allows_basic_appointments,
+    tier_allows_appointment_notifications,
+    tier_allows_appointment_followups,
     get_tier_price_cents,
 )
 from utils.coupons import (
@@ -48,6 +51,17 @@ class TierSystemTests(unittest.TestCase):
         self.assertFalse(tier_allows_call_forwarding("starter"))
         self.assertTrue(tier_allows_call_forwarding("pro"))
         self.assertTrue(tier_allows_call_forwarding("duo_pro"))
+
+    def test_appointment_feature_gates(self):
+        self.assertTrue(tier_allows_basic_appointments("starter"))
+        self.assertTrue(tier_allows_basic_appointments("duo_starter"))
+        self.assertFalse(tier_allows_appointment_notifications("starter"))
+        self.assertFalse(tier_allows_appointment_notifications("duo_starter"))
+        self.assertFalse(tier_allows_appointment_followups("starter"))
+        self.assertTrue(tier_allows_appointment_notifications("pro"))
+        self.assertTrue(tier_allows_appointment_followups("pro"))
+        self.assertTrue(tier_allows_appointment_notifications("duo_pro"))
+        self.assertTrue(tier_allows_appointment_followups("duo_premium"))
 
 
 class FoundersCouponTests(unittest.TestCase):

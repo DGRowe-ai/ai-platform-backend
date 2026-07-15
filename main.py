@@ -183,10 +183,15 @@ from plan_utils import (
     normalize_checkout_plan,
     normalize_plan_type,
     plan_type_from_stripe_price,
+    require_appointment_notifications,
+    require_basic_appointments,
     require_chatbot_access,
     require_duo_access,
     require_voicebot_access,
     serialize_subscription,
+    tier_allows_appointment_followups,
+    tier_allows_appointment_notifications,
+    tier_allows_basic_appointments,
     tier_from_stripe_price,
     user_has_chatbot,
     user_has_voicebot,
@@ -1072,6 +1077,42 @@ def require_business_billing_active(db: Session, business: Business):
     )
 
 
+def get_business_owner(db: Session, business: Business):
+    if not business.owner_id:
+        return None
+    return db.query(User).filter(User.id == business.owner_id).first()
+
+
+def business_tier_allows_basic_appointments(db: Session, business: Business) -> bool:
+    owner = get_business_owner(db, business)
+    if not owner:
+        return False
+    return tier_allows_basic_appointments(user_tier(owner))
+
+
+def business_tier_allows_appointment_notifications(db: Session, business: Business) -> bool:
+    owner = get_business_owner(db, business)
+    if not owner:
+        return False
+    return tier_allows_appointment_notifications(user_tier(owner))
+
+
+def get_appointment_prompt_for_owner(owner: User | None) -> str:
+    if not owner or not tier_allows_basic_appointments(user_tier(owner)):
+        return ""
+
+    if not tier_allows_appointment_followups(user_tier(owner)):
+        return """
+Appointment requests:
+- If a customer asks for an appointment, collect only the basics: full name, contact
+  email or phone, preferred date, preferred time, and requested service. Notes are optional.
+- Ask only for missing required appointment fields. Do not ask extra follow-up questions.
+- Once the required fields are present, call submit_appointment_request.
+"""
+
+    return APPOINTMENT_CHAT_INSTRUCTIONS
+
+
 def _execute_chat(
     business_id: str,
     message: str,
@@ -1098,6 +1139,9 @@ def _execute_chat(
     if kb_path.exists():
         legacy_kb = kb_path.read_text(encoding="utf-8", errors="ignore").strip()
 
+    owner = get_business_owner(db, business)
+    appointment_prompt = get_appointment_prompt_for_owner(owner)
+
     system_prompt = f"""
     You are a chatbot for this business.
     Tone: {settings.get('tone', 'friendly')}
@@ -1105,14 +1149,14 @@ def _execute_chat(
     Custom instructions: {settings.get('custom_instructions', '')}
     Frequently asked questions:
     {faq_text or 'No FAQs configured.'}
-    {APPOINTMENT_CHAT_INSTRUCTIONS}
+    {appointment_prompt}
     """
 
     if kb_context:
         system_prompt += f"\nRelevant uploaded knowledge:\n{kb_context}"
     if legacy_kb:
         system_prompt += f"\nAdditional business knowledge:\n{legacy_kb[:4000]}"
-    if APPOINTMENT_KNOWLEDGE_LINE not in system_prompt:
+    if appointment_prompt and APPOINTMENT_KNOWLEDGE_LINE not in system_prompt:
         system_prompt += f"\n{APPOINTMENT_KNOWLEDGE_LINE}"
 
     save_message(business.id, conversation_id, "user", message)
@@ -1123,13 +1167,22 @@ def _execute_chat(
         conversation.append({"role": msg.role, "content": msg.message})
     conversation.append({"role": "user", "content": message})
 
+    completion_kwargs = {
+        "model": "gpt-4o-mini",
+        "messages": conversation,
+        "max_tokens": settings.get("max_response_length", 300),
+        "timeout": 15,
+    }
+    if appointment_prompt:
+        completion_kwargs.update(
+            {
+                "tools": [APPOINTMENT_TOOL],
+                "tool_choice": "auto",
+            }
+        )
+
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=conversation,
-        tools=[APPOINTMENT_TOOL],
-        tool_choice="auto",
-        max_tokens=settings.get("max_response_length", 300),
-        timeout=15,
+        **completion_kwargs,
     )
 
     assistant_message = response.choices[0].message
@@ -1140,6 +1193,7 @@ def _execute_chat(
                 db,
                 business,
                 tool_call.function.arguments,
+                notify_client=business_tier_allows_appointment_notifications(db, business),
             )
         else:
             bot_reply = assistant_message.content or "How can I help you today?"
@@ -1515,6 +1569,7 @@ def list_client_appointment_requests(
     db: Session = Depends(get_db),
 ):
     require_role_guard(user, ["owner", "admin", "staff"])
+    require_basic_appointments(user)
     business = get_client_business(db, user)
     records = (
         db.query(AppointmentRequest)
@@ -1536,6 +1591,7 @@ def patch_client_appointment_request(
     db: Session = Depends(get_db),
 ):
     require_role_guard(user, ["owner", "admin", "staff"])
+    require_basic_appointments(user)
     business = get_client_business(db, user)
     status = data.get("status")
     if not status:
@@ -1549,6 +1605,7 @@ def get_client_appointment_settings(
     db: Session = Depends(get_db),
 ):
     require_role_guard(user, ["owner", "admin", "staff"])
+    require_appointment_notifications(user)
     business = get_client_business(db, user)
     settings = (
         db.query(BusinessSettings)
@@ -1567,6 +1624,7 @@ def save_client_appointment_settings(
     db: Session = Depends(get_db),
 ):
     require_role_guard(user, ["owner", "admin", "staff"])
+    require_appointment_notifications(user)
     business = get_client_business(db, user)
     return update_appointment_settings(db, business.id, data)
 
@@ -1583,10 +1641,20 @@ def create_voicebot_appointment_request(
     business = resolve_business(db, business_key)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
+    if not business_tier_allows_basic_appointments(db, business):
+        raise HTTPException(
+            status_code=403,
+            detail="This business subscription tier does not include appointment requests.",
+        )
 
     payload = normalize_external_appointment_payload(data)
     try:
-        record = create_appointment_request(db, business, payload)
+        record = create_appointment_request(
+            db,
+            business,
+            payload,
+            notify_client=business_tier_allows_appointment_notifications(db, business),
+        )
     except AppointmentValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

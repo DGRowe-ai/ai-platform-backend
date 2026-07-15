@@ -66,6 +66,14 @@ DUO_TIERS = {TIER_DUO_STARTER, TIER_DUO_PRO, TIER_DUO_PREMIUM}
 COUPON_ELIGIBLE_TIERS = VOICEBOT_FEATURE_TIERS | DUO_TIERS
 PREMIUM_TIERS = {TIER_PREMIUM, TIER_DUO_PREMIUM}
 PRO_OR_HIGHER_VOICE = {TIER_PRO, TIER_PREMIUM, TIER_DUO_PRO, TIER_DUO_PREMIUM}
+BASIC_APPOINTMENT_TIERS = VALID_TIERS
+ADVANCED_APPOINTMENT_TIERS = {
+    TIER_CHATBOT,
+    TIER_PRO,
+    TIER_PREMIUM,
+    TIER_DUO_PRO,
+    TIER_DUO_PREMIUM,
+}
 
 # Backward-compatible aliases used throughout older modules
 PLAN_CHATBOT = PRODUCT_CHATBOT
@@ -163,6 +171,26 @@ def tier_allows_custom_personality(tier: str | None) -> bool:
 
 def tier_allows_follow_ups(tier: str | None) -> bool:
     return normalize_tier(tier) in PRO_OR_HIGHER_VOICE
+
+
+def tier_allows_basic_appointments(tier: str | None) -> bool:
+    return normalize_tier(tier) in BASIC_APPOINTMENT_TIERS
+
+
+def tier_allows_appointment_notifications(tier: str | None) -> bool:
+    return normalize_tier(tier) in ADVANCED_APPOINTMENT_TIERS
+
+
+def tier_allows_appointment_followups(tier: str | None) -> bool:
+    return normalize_tier(tier) in ADVANCED_APPOINTMENT_TIERS
+
+
+def tier_allows_lead_capture(tier: str | None) -> bool:
+    return normalize_tier(tier) in ADVANCED_APPOINTMENT_TIERS
+
+
+def tier_allows_custom_scripts(tier: str | None) -> bool:
+    return normalize_tier(tier) in ADVANCED_APPOINTMENT_TIERS
 
 
 def tier_is_premium(tier: str | None) -> bool:
@@ -344,13 +372,21 @@ def serialize_subscription(user: User) -> dict:
         "billing_status": user.billing_status or "inactive",
         "dashboard_url": DASHBOARD_BY_PRODUCT.get(product, DASHBOARD_BY_PRODUCT[PRODUCT_CHATBOT]),
         "features": {
+            "appointment_requests": tier_allows_basic_appointments(tier),
+            "appointment_notifications": tier_allows_appointment_notifications(tier),
+            "appointment_follow_up_questions": tier_allows_appointment_followups(tier),
+            "lead_capture": tier_allows_lead_capture(tier),
             "multi_location": tier_allows_multi_location(tier),
             "call_forwarding": tier_allows_call_forwarding(tier),
             "custom_personality": tier_allows_custom_personality(tier),
+            "custom_scripts": tier_allows_custom_scripts(tier),
             "follow_up_questions": tier_allows_follow_ups(tier),
             "custom_workflows": tier_is_premium(tier),
             "monthly_optimization": tier_is_premium(tier),
             "dedicated_support": tier_is_premium(tier),
+            "advanced_personality_tuning": tier_is_premium(tier),
+            "multi_location_forwarding": tier_allows_multi_location(tier),
+            "automated_booking_coming_soon": tier_is_premium(tier),
         },
     }
 
@@ -376,6 +412,25 @@ def require_duo_access(user: User) -> None:
         raise HTTPException(
             status_code=403,
             detail="Your subscription does not include the duo dashboard.",
+        )
+
+
+def require_basic_appointments(user: User) -> None:
+    if not tier_allows_basic_appointments(user_tier(user)):
+        raise HTTPException(
+            status_code=403,
+            detail="Your subscription tier does not include appointment requests.",
+        )
+
+
+def require_appointment_notifications(user: User) -> None:
+    if not tier_allows_appointment_notifications(user_tier(user)):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Appointment notification settings are available on Pro, Premium, "
+                "Duo Pro, and Duo Premium tiers."
+            ),
         )
 
 
