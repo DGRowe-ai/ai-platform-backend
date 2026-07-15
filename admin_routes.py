@@ -20,7 +20,8 @@ from auth_utils import get_current_user, require_platform_admin
 from business_utils import delete_business_for_admin, get_business_by_key
 from database import get_db
 from email_utils import REPORT_RECIPIENT, send_email, send_email_with_attachment
-from models import Business, Payment, ReportRun, User
+from models import Business, BusinessSettings, Payment, ReportRun, User
+from plan_utils import serialize_subscription, user_tier
 from pdf_utils import build_monthly_report_pdf
 from report_utils import (
     build_daily_report_data,
@@ -102,6 +103,54 @@ def admin_get_all_businesses(
 ):
     require_platform_admin(user)
     return get_admin_businesses(db)
+
+
+@router.get("/admin/client-information")
+def admin_client_information(
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_platform_admin(user)
+
+    rows = (
+        db.query(Business, User, BusinessSettings)
+        .outerjoin(User, Business.owner_id == User.id)
+        .outerjoin(BusinessSettings, BusinessSettings.business_id == Business.id)
+        .order_by(Business.name.asc())
+        .all()
+    )
+
+    clients = []
+    for business, owner, settings in rows:
+        subscription = serialize_subscription(owner) if owner else {}
+        forwarding_number = ""
+        forwarding_enabled = False
+        business_phone = ""
+        if settings:
+            forwarding_number = settings.call_forwarding_number or ""
+            forwarding_enabled = bool(settings.call_forwarding_enabled)
+            business_phone = settings.voice_business_phone or ""
+
+        clients.append(
+            {
+                "business_id": business.id,
+                "business_key": business.folder_name,
+                "business_name": business.name or business.folder_name,
+                "owner_id": owner.id if owner else None,
+                "owner_email": owner.email if owner else None,
+                "tier": user_tier(owner) if owner else None,
+                "product_type": subscription.get("product_type"),
+                "plan_type": subscription.get("plan_type"),
+                "subscription_active": bool(owner.subscription_active) if owner else False,
+                "billing_status": owner.billing_status if owner else "unknown",
+                "call_forwarding_enabled": forwarding_enabled,
+                "call_forwarding_number": forwarding_number,
+                "voice_business_phone": business_phone,
+                "features": subscription.get("features", {}),
+            }
+        )
+
+    return {"clients": clients}
 
 
 @router.delete("/admin/businesses/{business_key}")
