@@ -337,6 +337,8 @@ def create_appointment_request(
     db: Session,
     business: Business,
     payload: dict,
+    *,
+    notify_client: bool = True,
 ) -> AppointmentRequest:
     settings = get_business_settings_row(db, business.id)
     validated = validate_appointment_payload(
@@ -361,7 +363,8 @@ def create_appointment_request(
     db.commit()
     db.refresh(record)
 
-    notify_client_of_appointment(db, business, record)
+    if notify_client:
+        notify_client_of_appointment(db, business, record)
 
     if "@" in record.customer_contact:
         try:
@@ -383,6 +386,8 @@ def process_appointment_tool_call(
     db: Session,
     business: Business,
     arguments_json: str,
+    *,
+    notify_client: bool = True,
 ) -> str:
     try:
         payload = json.loads(arguments_json or "{}")
@@ -390,7 +395,12 @@ def process_appointment_tool_call(
         return "I couldn't save that appointment request. Please try again."
 
     try:
-        appointment = create_appointment_request(db, business, payload)
+        appointment = create_appointment_request(
+            db,
+            business,
+            payload,
+            notify_client=notify_client,
+        )
         return build_customer_confirmation(appointment)
     except AppointmentValidationError as exc:
         return str(exc)
