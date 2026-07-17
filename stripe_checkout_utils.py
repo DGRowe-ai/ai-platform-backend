@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BACKEND_URL = "https://ai-platform-backend-ulqs.onrender.com"
 DEFAULT_FRONTEND_URL = "https://ai-platform-frontend-uaaa.onrender.com"
+DEFAULT_MARKETING_SITE_URL = "https://roweai.ca"
 
 TIER_PRODUCT_LABELS = {
     "chatbot": "Rowe AI Chatbot Subscription",
@@ -58,6 +59,28 @@ def get_frontend_public_url() -> str:
         or os.getenv("PUBLIC_FRONTEND_URL")
         or DEFAULT_FRONTEND_URL
     ).rstrip("/")
+
+
+def get_marketing_site_url() -> str:
+    return (
+        os.getenv("MARKETING_SITE_URL")
+        or os.getenv("PASSWORD_RESET_BASE_URL")
+        or DEFAULT_MARKETING_SITE_URL
+    ).rstrip("/")
+
+
+def get_stripe_cancel_url(*, for_logged_in_user: bool = False) -> str:
+    """Where Stripe sends people who abandon checkout.
+
+    Public / website checkout returns to the marketing site plans section.
+    Logged-in subscription checkout returns to the app billing page.
+    """
+    override = os.getenv("STRIPE_CANCEL_URL")
+    if override:
+        return override.strip()
+    if for_logged_in_user:
+        return f"{get_frontend_public_url()}/billing.html"
+    return f"{get_marketing_site_url()}/?checkout=cancelled"
 
 
 def get_stripe_price_id() -> str:
@@ -285,7 +308,7 @@ def create_billing_first_checkout_session(
             subscription_data=subscription_data or None,
             metadata=metadata or None,
             success_url=f"{frontend_url}/register.html?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{frontend_url}/billing.html",
+            cancel_url=get_stripe_cancel_url(),
         )
     except stripe.error.StripeError as exc:
         logger.exception("Billing-first checkout session failed")
@@ -363,7 +386,7 @@ def create_subscription_checkout_session(
             subscription_data=subscription_data or None,
             metadata=metadata,
             success_url=f"{frontend_url}/register.html?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{frontend_url}/billing.html",
+            cancel_url=get_stripe_cancel_url(for_logged_in_user=True),
         )
     except stripe.error.StripeError as exc:
         logger.exception("Stripe checkout session failed for user_id=%s", user.id)
