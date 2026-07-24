@@ -3,6 +3,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from email.mime.image import MIMEImage
+from pathlib import Path
 from dotenv import load_dotenv
 import os
 
@@ -28,6 +29,54 @@ REFERRAL_ADMIN_EMAIL = os.getenv(
 REVIEW_EMAIL_SENDER = os.getenv("REVIEW_EMAIL_SENDER", "support@roweai.ca")
 GOOGLE_REVIEW_URL = "https://share.google/HIvgRJCoeZ1NLXap0"
 REVIEW_EMAIL_SUBJECT = "We'd Love To Hear Your Review"
+CLIENT_SERVICE_AGREEMENT_FILENAME = "Client Service Agreement.pdf"
+
+
+def _get_client_service_agreement_bytes() -> bytes:
+    """Load the Client Service Agreement PDF bundled with the backend."""
+    candidates = [
+        Path(__file__).resolve().parent / "assets" / CLIENT_SERVICE_AGREEMENT_FILENAME,
+        Path(__file__).resolve().parent.parent
+        / "ai-latform"
+        / CLIENT_SERVICE_AGREEMENT_FILENAME,
+        Path(__file__).resolve().parent.parent
+        / "ai-platform"
+        / CLIENT_SERVICE_AGREEMENT_FILENAME,
+    ]
+    for path in candidates:
+        if path.exists():
+            return path.read_bytes()
+    raise FileNotFoundError(
+        f"{CLIENT_SERVICE_AGREEMENT_FILENAME} not found in assets/"
+    )
+
+
+def send_welcome_email_with_attachment(
+    *,
+    to_email: str,
+    subject: str,
+    body: str,
+    from_email=None,
+) -> None:
+    """Send a welcome email with the Client Service Agreement attached."""
+    agreement_note = (
+        "\n----------------------------------------\n"
+        "Client Service Agreement\n"
+        "----------------------------------------\n"
+        "Please find your Client Service Agreement attached to this email.\n"
+    )
+    if "Client Service Agreement" not in body:
+        body = body.rstrip() + "\n" + agreement_note
+
+    send_email_with_attachment(
+        to_email,
+        subject,
+        body,
+        _get_client_service_agreement_bytes(),
+        CLIENT_SERVICE_AGREEMENT_FILENAME,
+        from_email=from_email or PASSWORD_RESET_SENDER,
+    )
+
 
 
 def send_email(to_email, subject, body, from_email=None):
@@ -338,7 +387,7 @@ just reply to this email and we'll take care of you.
 Thanks for choosing Rowe AI!
 """
 
-    send_email(
+    send_welcome_email_with_attachment(
         to_email=to_email,
         subject="Welcome to Rowe AI — Here's Your Referral Link",
         body=body,
@@ -372,7 +421,7 @@ Welcome aboard — your AI receptionist is ready to work.
 Rowe AI Team
 """
 
-    send_email(
+    send_welcome_email_with_attachment(
         to_email=to_email,
         subject="Welcome to Rowe AI Voicebot — Your AI Phone Receptionist Is Ready",
         body=body,
@@ -416,7 +465,7 @@ Welcome to Rowe AI Duo — your business now has full AI coverage.
 Rowe AI Team
 """
 
-    send_email(
+    send_welcome_email_with_attachment(
         to_email=to_email,
         subject="Welcome to Rowe AI Duo — Your Chatbot & Voicebot Are Ready",
         body=body,
@@ -439,7 +488,7 @@ Your chatbot is ready to set up in your client dashboard. If you need help getti
 Thank you for choosing Rowe AI!
 """
 
-    send_email(
+    send_welcome_email_with_attachment(
         to_email=to_email,
         subject="Welcome to Rowe AI",
         body=body,
@@ -578,10 +627,19 @@ Rowe AI System
     )
 
 
-def send_email_with_attachment(to_email, subject, body, attachment_bytes, attachment_filename, mime_type="application/pdf"):
+def send_email_with_attachment(
+    to_email,
+    subject,
+    body,
+    attachment_bytes,
+    attachment_filename,
+    mime_type="application/pdf",
+    from_email=None,
+):
+    sender = from_email or VERIFIED_SENDER
     msg = MIMEMultipart()
     msg["Subject"] = subject
-    msg["From"] = VERIFIED_SENDER
+    msg["From"] = sender
     msg["To"] = to_email
     msg.attach(MIMEText(body))
 
@@ -592,5 +650,5 @@ def send_email_with_attachment(to_email, subject, body, attachment_bytes, attach
     server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
     server.starttls()
     server.login(SMTP_USER, SMTP_PASSWORD)
-    server.sendmail(VERIFIED_SENDER, to_email, msg.as_string())
+    server.sendmail(sender, to_email, msg.as_string())
     server.quit()
